@@ -41,6 +41,7 @@ US_Visa_Appointment_Canada_Automation/
 ├── install_kali.sh               # Kali Linux installation script
 ├── config.ini                    # Configuration file (created by installer)
 ├── visa_checker.log              # Application logs
+├── configure.sh                  # Interactive configuration script (Linux)
 ├── visa_env/                     # Virtual environment (Linux only)
 ├── run_visa_checker.sh           # Linux wrapper script (created by installer)
 ├── run_web_ui.sh                 # Linux web UI wrapper (created by installer)
@@ -132,6 +133,15 @@ AUTO_BOOK = False
 2. Generate an "App Password" for this application
 3. Use your Gmail address as `SMTP_USER`
 4. Use the generated app password as `SMTP_PASS`
+
+**Important**: Replace all placeholder values (starting with "your_") with your actual information before running the script.
+
+### Method 3: Interactive Configuration (Linux)
+For Linux users, you can use the interactive configuration script:
+```bash
+chmod +x configure.sh && ./configure.sh
+```
+This will guide you through entering your credentials step by step.
 
 ## 🚀 Usage
 
@@ -233,10 +243,22 @@ pip install webdriver-manager
 - Verify date range settings
 - Confirm current appointment exists
 
-**"Permission denied" on Linux**
-```bash
-chmod +x install_*.sh
-```
+**"Could not find email/password field"**
+- The AIS website structure may have changed
+- Check `visa_checker.log` for which selectors were tried
+- The website may require manual intervention due to CAPTCHA
+
+**"SMTP Authentication failed"**
+- Verify Gmail app password is correct
+- Check that you've enabled 2-factor authentication on Gmail
+- Ensure the app password was generated correctly
+- Try using a different email provider if Gmail doesn't work
+
+**"Login failed - check credentials or CAPTCHA"**
+- Verify your AIS account credentials
+- The website may have CAPTCHA protection
+- Try accessing the website manually first
+- Consider using a VPN to reduce CAPTCHA frequency
 
 ### Getting Help
 1. Check the logs: `cat visa_checker.log`
