@@ -246,4 +246,4 @@ This tool is provided for educational purposes only. Users are responsible for c
 
 ---
 
-**Made with ❤️ for the Canadian visa community**
+**Made with ❤️**
