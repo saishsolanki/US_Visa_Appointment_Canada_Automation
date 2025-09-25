@@ -187,6 +187,24 @@ Access at: http://127.0.0.1:5000
 
 ## 📊 Monitoring
 
+### Console Output
+The script now provides real-time progress updates in the console:
+```
+🚀 US Visa Appointment Checker Started
+==================================================
+📅 Current appointment date: 2025-12-01
+📍 Location: Ottawa - U.S. Embassy
+⏱️  Check frequency: 5 minutes
+📧 Notifications: Enabled
+==================================================
+
+🔄 Starting check #1 at 2024-01-15 14:30:00
+------------------------------
+✅ Check #1 completed successfully
+⏰ Next check at: 14:35:00 (in 5 minutes)
+💤 Sleeping...
+```
+
 ### Logs
 Check `visa_checker.log` for detailed execution information:
 ```bash
@@ -197,6 +215,15 @@ tail -f visa_checker.log
 - **INFO**: Normal operations and appointment checks
 - **WARNING**: Non-critical issues
 - **ERROR**: Critical errors requiring attention
+
+### What Gets Logged
+- Browser initialization and page loading
+- Login attempts and success/failure
+- Element detection (email, password, buttons)
+- Navigation between pages
+- Appointment availability checks
+- Email notification sending
+- Errors and exceptions
 
 ## ⚠️ Important Notes
 
@@ -261,10 +288,11 @@ pip install webdriver-manager
 - Consider using a VPN to reduce CAPTCHA frequency
 
 ### Getting Help
-1. Check the logs: `cat visa_checker.log`
-2. Verify configuration: `cat config.ini`
-3. Test manual login on AIS website
-4. Check internet connection
+1. **Check console output**: The script now shows real-time progress with emojis and timestamps
+2. **Check the logs**: `cat visa_checker.log` or `tail -f visa_checker.log` for detailed step-by-step information
+3. **Verify configuration**: `cat config.ini` (ensure no placeholder values remain)
+4. **Test manual login**: Try accessing the AIS website manually to verify your credentials work
+5. **Check internet connection**: Ensure stable connectivity for website monitoring
 
 ## 🤝 Contributing
 
