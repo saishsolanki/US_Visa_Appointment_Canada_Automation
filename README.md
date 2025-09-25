@@ -41,6 +41,9 @@ US_Visa_Appointment_Canada_Automation/
 ├── install_kali.sh               # Kali Linux installation script
 ├── config.ini                    # Configuration file (created by installer)
 ├── visa_checker.log              # Application logs
+├── visa_env/                     # Virtual environment (Linux only)
+├── run_visa_checker.sh           # Linux wrapper script (created by installer)
+├── run_web_ui.sh                 # Linux web UI wrapper (created by installer)
 ├── templates/
 │   └── index.html                # Web UI template
 ├── run.bat                       # Windows runner script
@@ -87,11 +90,14 @@ chmod +x install_arch.sh && ./install_arch.sh
 chmod +x install_kali.sh && ./install_kali.sh
 ```
 
-### What the Installer Does
+These scripts will install Python3, pip, create a virtual environment, install dependencies, and create default configuration with wrapper scripts.
+
+### What the Linux Installer Does
 - ✅ Installs Python 3.8+ and pip (if not present)
-- ✅ Installs required dependencies: `selenium`, `webdriver-manager`, `flask`
+- ✅ Creates a virtual environment (`visa_env/`)
+- ✅ Installs required dependencies in the virtual environment
+- ✅ Creates wrapper scripts: `run_visa_checker.sh`, `run_web_ui.sh`
 - ✅ Creates default `config.ini` with Gmail SMTP configuration
-- ✅ Provides setup instructions
 
 ## ⚙️ Configuration
 
@@ -130,6 +136,8 @@ AUTO_BOOK = False
 ## 🚀 Usage
 
 ### Start the Appointment Checker
+
+**Windows:**
 ```bash
 # Default frequency (5 minutes)
 python visa_appointment_checker.py
@@ -141,10 +149,27 @@ python visa_appointment_checker.py --frequency 10
 run.bat
 ```
 
+**Linux:**
+```bash
+# Default frequency (5 minutes) - uses virtual environment
+./run_visa_checker.sh
+
+# Custom frequency (10 minutes)
+./run_visa_checker.sh --frequency 10
+```
+
 ### Web UI for Configuration
+
+**Windows:**
 ```bash
 python web_ui.py
 ```
+
+**Linux:**
+```bash
+./run_web_ui.sh
+```
+
 Access at: http://127.0.0.1:5000
 
 ### Command Line Options
@@ -231,7 +256,7 @@ chmod +x install_*.sh
 ```bash
 git clone https://github.com/yourusername/us-visa-appointment-checker.git
 cd us-visa-appointment-checker
-pip install -r requirements.txt  # Create this file with dependencies
+pip install -r requirements.txt
 ```
 
 ## 📄 License
@@ -246,4 +271,4 @@ This tool is provided for educational purposes only. Users are responsible for c
 
 ---
 
-**Made with ❤️**
+**Made with ❤️ for the Canadian visa community**
