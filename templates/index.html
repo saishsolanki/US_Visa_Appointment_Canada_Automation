@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>US Visa Appointment Config</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        form { max-width: 600px; }
+        label { display: block; margin-top: 10px; }
+        input, select { width: 100%; padding: 8px; margin-top: 5px; }
+        input[type="checkbox"] { width: auto; }
+        small { display: block; color: #666; font-size: 0.9em; margin-bottom: 10px; }
+        button { margin-top: 20px; padding: 10px 20px; background-color: #4CAF50; color: white; border: none; cursor: pointer; }
+        button:hover { background-color: #45a049; }
+    </style>
+</head>
+<body>
+    <h1>US Visa Appointment Checker Configuration</h1>
+    <form method="post">
+        <label for="EMAIL">Email:</label>
+        <input type="email" id="EMAIL" name="EMAIL" value="{{ current.EMAIL }}" required>
+        <small>Your AIS account email address (found on the US Visa website login page)</small>
+
+        <label for="PASSWORD">Password:</label>
+        <input type="password" id="PASSWORD" name="PASSWORD" value="{{ current.PASSWORD }}" required>
+        <small>Your AIS account password</small>
+
+        <label for="CURRENT_APPOINTMENT_DATE">Current Appointment Date (YYYY-MM-DD):</label>
+        <input type="date" id="CURRENT_APPOINTMENT_DATE" name="CURRENT_APPOINTMENT_DATE" value="{{ current.CURRENT_APPOINTMENT_DATE }}" required>
+        <small>The date of your currently scheduled appointment (check your appointment confirmation email or AIS dashboard)</small>
+
+        <label for="LOCATION">Location:</label>
+        <input type="text" id="LOCATION" name="LOCATION" value="{{ current.LOCATION }}" required>
+        <small>The embassy/consulate location for your appointment (e.g., "Ottawa - U.S. Embassy") - check your current appointment details</small>
+
+        <label for="START_DATE">Start Date (YYYY-MM-DD):</label>
+        <input type="date" id="START_DATE" name="START_DATE" value="{{ current.START_DATE }}" required>
+        <small>The earliest date you're willing to accept a new appointment</small>
+
+        <label for="END_DATE">End Date (YYYY-MM-DD):</label>
+        <input type="date" id="END_DATE" name="END_DATE" value="{{ current.END_DATE }}" required>
+        <small>The latest date you're willing to accept a new appointment</small>
+
+        <label for="CHECK_FREQUENCY_MINUTES">Check Frequency (minutes):</label>
+        <input type="number" id="CHECK_FREQUENCY_MINUTES" name="CHECK_FREQUENCY_MINUTES" value="{{ current.CHECK_FREQUENCY_MINUTES }}" required>
+        <small>How often (in minutes) the script should check for new appointments (recommended: 5-15 minutes)</small>
+
+        <label for="SMTP_SERVER">SMTP Server:</label>
+        <input type="text" id="SMTP_SERVER" name="SMTP_SERVER" value="{{ current.SMTP_SERVER }}" required>
+        <small>Your email provider's SMTP server (e.g., smtp.gmail.com for Gmail, smtp.outlook.com for Outlook)</small>
+
+        <label for="SMTP_PORT">SMTP Port:</label>
+        <input type="number" id="SMTP_PORT" name="SMTP_PORT" value="{{ current.SMTP_PORT }}" required>
+        <small>The port for your SMTP server (usually 587 for TLS, 465 for SSL)</small>
+
+        <label for="SMTP_USER">SMTP User:</label>
+        <input type="email" id="SMTP_USER" name="SMTP_USER" value="{{ current.SMTP_USER }}" required>
+        <small>Your email address for sending notifications (usually the same as your login email)</small>
+
+        <label for="SMTP_PASS">SMTP Password:</label>
+        <input type="password" id="SMTP_PASS" name="SMTP_PASS" value="{{ current.SMTP_PASS }}" required>
+        <small>Your email password or app password (for Gmail, use an app password from Google Account settings)</small>
+
+        <label for="NOTIFY_EMAIL">Notify Email:</label>
+        <input type="email" id="NOTIFY_EMAIL" name="NOTIFY_EMAIL" value="{{ current.NOTIFY_EMAIL }}" required>
+        <small>The email address where you want to receive notifications (can be the same as SMTP User)</small>
+
+        <label for="AUTO_BOOK">
+            <input type="checkbox" id="AUTO_BOOK" name="AUTO_BOOK" {% if current.AUTO_BOOK == 'True' %}checked{% endif %}> Auto Book
+        </label>
+        <small>Whether to automatically book found appointments or just send notifications (recommended: unchecked for safety)</small>
+
+        <button type="submit">Save Configuration</button>
+    </form>
+</body>
+</html>
