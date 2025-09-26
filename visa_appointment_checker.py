@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 from urllib.parse import urljoin
 
 from email.mime.text import MIMEText
@@ -90,6 +90,15 @@ class CheckerConfig:
     busy_backoff_min_minutes: int
     busy_backoff_max_minutes: int
     abort_on_captcha: bool
+    # Strategic optimization settings
+    burst_mode_enabled: bool
+    multi_location_check: bool
+    backup_locations: str
+    prime_hours_start: str
+    prime_hours_end: str
+    prime_time_backoff_multiplier: float
+    weekend_frequency_multiplier: float
+    pattern_learning_enabled: bool
 
     @classmethod
     def load(cls, path: str = "config.ini") -> "CheckerConfig":
@@ -159,6 +168,12 @@ class CheckerConfig:
         if start_dt > end_dt:
             raise ValueError("START_DATE must be earlier than or equal to END_DATE")
 
+        def _get_float(key: str, fallback: Optional[float] = None) -> float:
+            try:
+                return float(_get(key, str(fallback) if fallback is not None else None))
+            except ValueError as exc:  # noqa: B904
+                raise ValueError(f"{key} must be a float") from exc
+
         return cls(
             email=_get("EMAIL"),
             password=_get("PASSWORD"),
@@ -181,6 +196,15 @@ class CheckerConfig:
             busy_backoff_min_minutes=max(1, _get_int("BUSY_BACKOFF_MIN_MINUTES", 10)),
             busy_backoff_max_minutes=max(1, _get_int("BUSY_BACKOFF_MAX_MINUTES", 15)),
             abort_on_captcha=_to_bool(_get("ABORT_ON_CAPTCHA", "False")),
+            # Strategic optimization settings
+            burst_mode_enabled=_to_bool(_get("BURST_MODE_ENABLED", "True")),
+            multi_location_check=_to_bool(_get("MULTI_LOCATION_CHECK", "True")),
+            backup_locations=_get("BACKUP_LOCATIONS", "Toronto,Montreal,Vancouver"),
+            prime_hours_start=_get("PRIME_HOURS_START", "6,12,17,22"),
+            prime_hours_end=_get("PRIME_HOURS_END", "9,14,19,1"),
+            prime_time_backoff_multiplier=_get_float("PRIME_TIME_BACKOFF_MULTIPLIER", 0.5),
+            weekend_frequency_multiplier=_get_float("WEEKEND_FREQUENCY_MULTIPLIER", 2.0),
+            pattern_learning_enabled=_to_bool(_get("PATTERN_LEARNING_ENABLED", "True")),
         )
 
     def is_smtp_configured(self) -> bool:
@@ -373,6 +397,12 @@ class VisaAppointmentChecker:
         (By.CSS_SELECTOR, "select[id*='consulate_appointment_time']"),
     ]
 
+    LOCATION_SELECTORS: List[Selector] = [
+        (By.ID, "appointments_consulate_address"),
+        (By.CSS_SELECTOR, "select[id*='consulate_address']"),
+        (By.CSS_SELECTOR, "select[name*='consulate_address']"),
+    ]
+
     DATEPICKER_CONTAINER_SELECTORS: List[Selector] = [
         (By.ID, "ui-datepicker-div"),
         (By.CSS_SELECTOR, "#ui-datepicker-div"),
@@ -408,6 +438,18 @@ class VisaAppointmentChecker:
             'success_rate': 0.0,
             'avg_response_time': 0.0
         }
+        
+        # Strategic optimization properties
+        self._availability_history: List[Dict[str, Any]] = []
+        self._pattern_file = Path("appointment_patterns.json")
+        self._prime_time_windows: List[Tuple[int, int]] = []
+        self._burst_mode_active = False
+        self._last_availability_event: Optional[datetime] = None
+        
+        # Initialize strategic components
+        self._parse_prime_time_windows()
+        if cfg.pattern_learning_enabled:
+            self._load_patterns()
         
         if cfg.heartbeat_path:
             heartbeat_path = Path(cfg.heartbeat_path).expanduser()
@@ -531,6 +573,160 @@ class VisaAppointmentChecker:
         return options
 
     # ------------------------------------------------------------------
+    # Strategic optimization methods
+    # ------------------------------------------------------------------
+    def _parse_prime_time_windows(self) -> None:
+        """Parse prime time configuration into time windows"""
+        try:
+            start_hours = [int(h.strip()) for h in self.cfg.prime_hours_start.split(',')]
+            end_hours = [int(h.strip()) for h in self.cfg.prime_hours_end.split(',')]
+            
+            self._prime_time_windows = list(zip(start_hours, end_hours))
+            logging.info("Prime time windows configured: %s", self._prime_time_windows)
+        except Exception as exc:
+            logging.warning("Invalid prime time configuration, using defaults: %s", exc)
+            self._prime_time_windows = [(6, 9), (12, 14), (17, 19), (22, 1)]
+
+    def _is_prime_time(self) -> bool:
+        """Check if current time falls in optimal checking windows"""
+        now = datetime.now()
+        current_hour = now.hour
+        
+        for start, end in self._prime_time_windows:
+            if start <= end:
+                if start <= current_hour < end:
+                    return True
+            else:  # Crosses midnight (e.g., 22-1)
+                if current_hour >= start or current_hour < end:
+                    return True
+        return False
+
+    def _calculate_optimal_frequency(self) -> float:
+        """Adjust checking frequency based on likelihood of appointments"""
+        base_freq = self.cfg.check_frequency_minutes
+        
+        if self._is_prime_time():
+            # More frequent during optimal windows
+            return max(1.0, base_freq * 0.5)  # 50% more frequent
+        elif 2 <= datetime.now().hour <= 6:
+            # Less frequent during low-activity hours
+            return base_freq * 2.0  # 50% less frequent  
+        elif datetime.now().weekday() in [5, 6]:  # Weekend
+            return base_freq * self.cfg.weekend_frequency_multiplier
+        else:
+            return base_freq
+
+    def _should_use_burst_mode(self) -> bool:
+        """Enable burst mode during high-probability windows"""
+        if not self.cfg.burst_mode_enabled:
+            return False
+            
+        now = datetime.now()
+        
+        # Business hours start (6-9 AM)
+        if 6 <= now.hour <= 9:
+            return True
+        
+        # Lunch hour (12-2 PM) 
+        if 12 <= now.hour <= 14:
+            return True
+            
+        # If we haven't seen "busy" in last 30 minutes (possible opening)
+        if self._last_busy_check and (datetime.now() - self._last_busy_check) > timedelta(minutes=30):
+            return True
+            
+        return False
+
+    def _check_all_locations(self) -> Optional[str]:
+        """Check availability across multiple consulates"""
+        if not self.cfg.multi_location_check:
+            return None
+            
+        backup_locations = [loc.strip() for loc in self.cfg.backup_locations.split(',') if loc.strip()]
+        locations = [self.cfg.location] + backup_locations
+        
+        for location in locations:
+            try:
+                if self._check_location_availability(location):
+                    logging.info("🎉 Found availability at %s!", location)
+                    return location
+            except Exception as exc:
+                logging.debug("Failed to check %s: %s", location, exc)
+                
+        return None
+
+    def _check_location_availability(self, location: str) -> bool:
+        """Quick availability check for specific location"""
+        try:
+            # Switch to location
+            location_select = self._find_element(self.LOCATION_SELECTORS, wait_time=5)
+            if location_select:
+                # Temporarily change the target location for this check
+                original_location = self.cfg.location
+                self.cfg.location = location
+                self._ensure_location_selected(location_select)
+                self.cfg.location = original_location  # Restore original
+                time.sleep(1)
+                
+            # Quick busy check
+            return not self._is_calendar_busy()
+        except Exception:
+            return False
+
+    def _load_patterns(self) -> None:
+        """Load historical availability patterns"""
+        if self._pattern_file.exists():
+            try:
+                with open(self._pattern_file) as f:
+                    self._availability_history = json.load(f)
+                logging.info("Loaded %d historical availability events", len(self._availability_history))
+            except Exception as exc:
+                logging.debug("Failed to load patterns: %s", exc)
+                self._availability_history = []
+
+    def _save_patterns(self) -> None:
+        """Save availability patterns for future optimization"""
+        try:
+            with open(self._pattern_file, 'w') as f:
+                json.dump(self._availability_history[-100:], f, indent=2)  # Keep last 100 events
+        except Exception as exc:
+            logging.debug("Failed to save patterns: %s", exc)
+
+    def _record_availability_event(self, event_type: str) -> None:
+        """Record when calendar becomes available or busy"""
+        if not self.cfg.pattern_learning_enabled:
+            return
+            
+        event = {
+            'timestamp': datetime.now().isoformat(),
+            'hour': datetime.now().hour,
+            'day_of_week': datetime.now().weekday(),
+            'event': event_type
+        }
+        self._availability_history.append(event)
+        self._save_patterns()
+
+    def _perform_burst_checks(self) -> bool:
+        """Perform rapid-fire checks during burst mode"""
+        logging.info("🚀 Entering burst mode - rapid checking for 10 minutes")
+        self._burst_mode_active = True
+        
+        try:
+            for i in range(20):  # 20 checks x 30 seconds = 10 minutes
+                if not self._is_calendar_busy():
+                    logging.info("🎉 CALENDAR AVAILABLE! Breaking burst mode after %d attempts", i + 1)
+                    self._record_availability_event("available_in_burst")
+                    return True
+                    
+                if i < 19:  # Don't sleep after last check
+                    time.sleep(30)
+                    
+            logging.info("Burst mode completed - no availability found")
+            return False
+        finally:
+            self._burst_mode_active = False
+
+    # ------------------------------------------------------------------
     # High level flow
     # ------------------------------------------------------------------
     def _get_page_state(self) -> str:
@@ -556,6 +752,23 @@ class VisaAppointmentChecker:
 
     def perform_check(self) -> None:
         start_time = datetime.now()
+        
+        # Strategic optimization: Check if we should use burst mode
+        if self._should_use_burst_mode():
+            if self._perform_burst_checks():
+                # Found availability in burst mode, continue with normal check
+                pass
+        
+        # Strategic optimization: Multi-location check if enabled
+        if self.cfg.multi_location_check:
+            available_location = self._check_all_locations()
+            if available_location and available_location != self.cfg.location:
+                send_notification(
+                    self.cfg,
+                    f"🌟 Appointment Available at {available_location}!",
+                    f"Found availability at alternative location: {available_location}"
+                )
+        
         driver = self.ensure_driver()
         
         try:
@@ -819,37 +1032,98 @@ class VisaAppointmentChecker:
         return True
 
     def _ensure_location_selected(self, element) -> None:
-        select = Select(element)
-        selected_text = select.first_selected_option.text.strip() if select.options else ""
+        # Check if it's a standard <select> element or a custom dropdown
+        if element.tag_name.lower() == 'select':
+            self._handle_standard_location_select(element)
+        else:
+            self._handle_custom_location_dropdown(element)
 
-        normalized_target = self.cfg.location.strip().lower()
-        normalized_selected = selected_text.lower()
-
-        if normalized_target == normalized_selected:
-            logging.info("Target consular location already selected: %s", selected_text)
-            return
-
+    def _handle_standard_location_select(self, element) -> None:
+        """Handle standard HTML <select> elements for location selection"""
         try:
-            select.select_by_visible_text(self.cfg.location)
-            logging.info("Selected consular location by exact match: %s", self.cfg.location)
-            return
-        except NoSuchElementException:
-            pass
+            select = Select(element)
+            selected_text = select.first_selected_option.text.strip() if select.options else ""
 
-        for option in select.options:
-            option_text = option.text.strip()
-            if not option_text:
-                continue
-            if normalized_target in option_text.lower() or option_text.lower() in normalized_target:
-                select.select_by_visible_text(option_text)
-                logging.info("Selected consular location using fuzzy match: %s", option_text)
+            normalized_target = self.cfg.location.strip().lower()
+            normalized_selected = selected_text.lower()
+
+            if normalized_target == normalized_selected:
+                logging.info("Target consular location already selected: %s", selected_text)
                 return
 
-        logging.warning(
-            "Unable to match configured location '%s' to the available dropdown options (currently '%s').",
-            self.cfg.location,
-            selected_text,
-        )
+            # Try exact match first
+            try:
+                select.select_by_visible_text(self.cfg.location)
+                logging.info("Selected consular location by exact match: %s", self.cfg.location)
+                return
+            except NoSuchElementException:
+                pass
+
+            # Try fuzzy matching
+            for option in select.options:
+                option_text = option.text.strip()
+                if not option_text:
+                    continue
+                if normalized_target in option_text.lower() or option_text.lower() in normalized_target:
+                    select.select_by_visible_text(option_text)
+                    logging.info("Selected consular location using fuzzy match: %s", option_text)
+                    return
+
+            logging.warning(
+                "Unable to match configured location '%s' to the available dropdown options (currently '%s').",
+                self.cfg.location,
+                selected_text,
+            )
+        except Exception as exc:
+            logging.debug("Error handling standard location select: %s", exc)
+
+    def _handle_custom_location_dropdown(self, element) -> None:
+        """Handle custom dropdown elements (div, etc.) for location selection"""
+        try:
+            # Check if location is already selected by looking at element text
+            current_text = element.text.strip()
+            normalized_target = self.cfg.location.strip().lower()
+            
+            if normalized_target in current_text.lower():
+                logging.info("Target consular location already selected: %s", current_text)
+                return
+
+            # Try to find and click the dropdown to open it
+            try:
+                element.click()
+                time.sleep(1)  # Wait for dropdown to open
+                
+                # Look for dropdown options - try multiple selectors
+                option_selectors = [
+                    (By.CSS_SELECTOR, f"[data-value*='{self.cfg.location}']"),
+                    (By.CSS_SELECTOR, f"[title*='{self.cfg.location}']"),
+                    (By.XPATH, f"//div[contains(text(), '{self.cfg.location}')]"),
+                    (By.XPATH, f"//li[contains(text(), '{self.cfg.location}')]"),
+                    (By.XPATH, f"//option[contains(text(), '{self.cfg.location}')]"),
+                    (By.CSS_SELECTOR, ".dropdown-item, .option, .select-option"),
+                ]
+                
+                # Try to find and click the correct option
+                for selector_type, selector_value in option_selectors:
+                    try:
+                        options = self.driver.find_elements(selector_type, selector_value)
+                        for option in options:
+                            option_text = option.text.strip()
+                            if option_text and normalized_target in option_text.lower():
+                                option.click()
+                                logging.info("Selected consular location from custom dropdown: %s", option_text)
+                                time.sleep(1)  # Wait for selection to register
+                                return
+                    except Exception:
+                        continue
+                        
+                logging.info("Location dropdown detected but target location not found in options")
+                
+            except Exception as exc:
+                logging.debug("Could not interact with custom dropdown: %s", exc)
+                
+        except Exception as exc:
+            logging.debug("Error handling custom location dropdown: %s", exc)
 
     def _is_calendar_busy(self) -> bool:
         """Check if calendar shows busy status"""
@@ -874,12 +1148,16 @@ class VisaAppointmentChecker:
         # Intelligent calendar polling with adaptive frequency
         if self._is_calendar_busy():
             self._busy_streak_count += 1
+            self._last_busy_check = datetime.now()
             message = "System is busy. Please try again later."
             
             if busy_element := self._is_selector_visible(self.CONSULATE_BUSY_SELECTORS):
                 message = busy_element.text.strip() or message
                 
             logging.info("Consular calendar message: %s", message)
+            
+            # Record busy event for pattern learning
+            self._record_availability_event("busy")
             
             # Adaptive frequency adjustment for repeated busy responses
             if self._busy_streak_count >= 3:
@@ -893,6 +1171,17 @@ class VisaAppointmentChecker:
             self._capture_artifact("consulate_busy")
             return
         else:
+            # Calendar is accessible!
+            if self._busy_streak_count > 5:  # Only alert if we've been seeing busy for a while
+                send_notification(
+                    self.cfg,
+                    "🚨 URGENT: Calendar Accessible!", 
+                    f"Calendar is no longer busy after {self._busy_streak_count} attempts. Checking appointments NOW!"
+                )
+            
+            # Record availability event for pattern learning
+            self._record_availability_event("accessible")
+            
             # Reset busy streak on successful calendar access
             if self._busy_streak_count > 0:
                 logging.info("Calendar accessible again after %d busy attempts", self._busy_streak_count)
@@ -1307,6 +1596,12 @@ class VisaAppointmentChecker:
         # Use adaptive frequency if available, otherwise fall back to configured frequency
         user_frequency = getattr(self, '_adaptive_frequency', self.cfg.check_frequency_minutes)
         
+        # Strategic optimization: Reduce backoff during prime time
+        prime_time_multiplier = 1.0
+        if self._is_prime_time():
+            prime_time_multiplier = self.cfg.prime_time_backoff_multiplier
+            logging.debug("Applying prime time backoff reduction: %.1fx", prime_time_multiplier)
+        
         # Factor in busy streak for more intelligent backoff
         busy_multiplier = 1.0 + (self._busy_streak_count * 0.2)  # Increase by 20% per busy streak
         
@@ -1315,14 +1610,19 @@ class VisaAppointmentChecker:
         # - For moderate checks (5-30 min): use moderate backoff 
         # - For infrequent checks (> 30 min): use shorter backoff
         if user_frequency < 5:
-            min_backoff = max(10, user_frequency * 3 * busy_multiplier)
-            max_backoff = max(20, user_frequency * 5 * busy_multiplier)
+            min_backoff = max(10, user_frequency * 3 * busy_multiplier * prime_time_multiplier)
+            max_backoff = max(20, user_frequency * 5 * busy_multiplier * prime_time_multiplier)
         elif user_frequency <= 30:
-            min_backoff = max(user_frequency, 8 * busy_multiplier)
-            max_backoff = max(user_frequency * 2, 15 * busy_multiplier)
+            min_backoff = max(user_frequency, 8 * busy_multiplier * prime_time_multiplier)
+            max_backoff = max(user_frequency * 2, 15 * busy_multiplier * prime_time_multiplier)
         else:
-            min_backoff = max(5, user_frequency // 2 * busy_multiplier)
-            max_backoff = max(10, user_frequency * busy_multiplier)
+            min_backoff = max(5, user_frequency // 2 * busy_multiplier * prime_time_multiplier)
+            max_backoff = max(10, user_frequency * busy_multiplier * prime_time_multiplier)
+        
+        # Ensure minimum backoff of 2 minutes during prime time
+        if self._is_prime_time():
+            min_backoff = max(2, min_backoff)
+            max_backoff = max(min_backoff + 1, max_backoff)
         
         delay_minutes = random.randint(int(min_backoff), int(max_backoff))
         self._backoff_until = datetime.now() + timedelta(minutes=delay_minutes)
@@ -1336,6 +1636,9 @@ class VisaAppointmentChecker:
             reason = f"moderate checking frequency ({user_frequency:.1f}m)"
         else:
             reason = f"current check interval ({user_frequency:.1f}m)"
+        
+        if self._is_prime_time():
+            reason += " [PRIME TIME - reduced backoff]"
             
         logging.info("Backoff scheduled for %s minutes due to busy calendar response (adjusted for %s)", 
                     delay_minutes, reason)
@@ -1399,15 +1702,29 @@ class VisaAppointmentChecker:
         return int(dynamic_minutes)
 
     def compute_sleep_seconds(self, base_minutes: int) -> int:
-        # Use dynamic calculation
-        adjusted_minutes = self._calculate_dynamic_backoff()
+        # Strategic optimization: Use optimal frequency calculation
+        optimal_minutes = self._calculate_optimal_frequency()
+        
+        # Use the more conservative of base_minutes and optimal calculation
+        if optimal_minutes < base_minutes:
+            adjusted_minutes = optimal_minutes
+            logging.debug("Using optimized frequency: %.1f minutes (prime time: %s)", 
+                        optimal_minutes, self._is_prime_time())
+        else:
+            adjusted_minutes = self._calculate_dynamic_backoff()
+        
         base_seconds = max(1, adjusted_minutes) * 60
         
         jitter = 0
         if self.cfg.sleep_jitter_seconds:
             jitter = random.randint(-self.cfg.sleep_jitter_seconds, self.cfg.sleep_jitter_seconds)
 
-        sleep_seconds = max(30, base_seconds + jitter)
+        # Reduce minimum sleep time during prime hours
+        min_sleep = 30
+        if self._is_prime_time():
+            min_sleep = 15  # Faster response during prime time
+        
+        sleep_seconds = max(min_sleep, base_seconds + jitter)
 
         if self._backoff_until:
             now = datetime.now()
@@ -1544,15 +1861,20 @@ def main() -> None:
     frequency = max(1, args.frequency)
     headless = args.headless
 
-    print("🚀 US Visa Appointment Checker Started")
-    print("=" * 50)
+    print("🚀 US Visa Appointment Checker Started - OPTIMIZED")
+    print("=" * 55)
     print(f"📅 Current appointment date: {cfg.current_appointment_date}")
     print(f"📍 Location: {cfg.location}")
-    print(f"⏱️  Check frequency: {frequency} minutes")
+    if cfg.multi_location_check and cfg.backup_locations:
+        backup_locs = [loc.strip() for loc in cfg.backup_locations.split(',') if loc.strip()]
+        print(f"🌎 Backup locations: {', '.join(backup_locs[:2])}{'...' if len(backup_locs) > 2 else ''}")
+    print(f"⏱️  Base frequency: {frequency} minutes")
+    print(f"🎯 Strategic optimization: {'Enabled' if cfg.burst_mode_enabled else 'Disabled'}")
+    print(f"🕐 Prime time optimization: {'Enabled' if cfg.prime_hours_start else 'Disabled'}")
     print(f"📧 Notifications: {'Enabled' if cfg.is_smtp_configured() else 'Disabled (configure SMTP)'}")
     print(f"🤖 Auto-book: {'Enabled' if cfg.auto_book else 'Disabled'}")
     print(f"🕶️ Headless mode: {'On' if headless else 'Off'}")
-    print("=" * 50)
+    print("=" * 55)
 
     logging.info("Configuration summary: %s", cfg.masked_summary())
     if cfg.heartbeat_path:

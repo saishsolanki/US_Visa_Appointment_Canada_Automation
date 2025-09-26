@@ -1,4 +1,54 @@
-# US Visa Appointment Checker Configuration Template
+# US Visa Appointment Checker Confcheck_frequency_minutes = 3
+
+# Strategic optimization settings
+burst_mode_enabled = True
+multi_location_check = True
+backup_locations = Toronto,Montreal,Vancouver
+
+# Prime time windows (24-hour format) - when appointments are most likely released
+prime_hours_start = 6,12,17,22
+prime_hours_end = 9,14,19,1
+
+# Backoff reduction during prime time
+prime_time_backoff_multiplier = 0.5
+
+# Weekend strategy adjustment
+weekend_frequency_multiplier = 2.0
+
+# Pattern learning
+pattern_learning_enabled = True
+
+# Gmail SMTP settings for notifications
+smtp_server = smtp.gmail.com
+smtp_port = 587
+smtp_user = your_gmail@gmail.com
+smtp_pass = your_gmail_app_password
+notify_email = your_notification_email@gmail.com
+
+# Auto-booking (use with caution)
+auto_book = False
+
+# Performance Optimization Settings (recommended defaults)
+driver_restart_checks = 50
+max_retry_attempts = 2
+sleep_jitter_seconds = 60te
+# Copy this file to config.ini and update with your information
+
+[DEFAULT]
+# Your AIS (US Visa) account credentials
+email = your_ais_email@example.com
+password = your_ais_password
+
+# Current appointment details
+current_appointment_date = 2025-12-01
+location = Ottawa - U.S. Embassy
+
+# Desired appointment window
+start_date = 2025-09-25
+end_date = 2025-12-31
+
+# Check frequency (recommended: 3-5 minutes for optimal results)
+check_frequency_minutes = 3ent Checker Configuration Template
 # Copy this file to config.ini and update with your information
 
 [DEFAULT]
