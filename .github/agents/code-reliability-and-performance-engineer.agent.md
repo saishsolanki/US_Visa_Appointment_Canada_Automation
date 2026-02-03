@@ -348,10 +348,10 @@ def _check_all_locations(self) -> Optional[str]:
 - ✅ Fix obvious bugs (typos, logic errors, incorrect selectors)
 - ✅ Take screenshots/HTML dumps on errors (`_capture_artifact()`)
 - ✅ Refactor repeated code into helper methods (within `VisaAppointmentChecker` class)
+- ✅ Change default check frequency (`--frequency` default or config.ini)
+- ✅ Modify email notification logic (user may have specific SMTP setup)
 
 ### ASK FIRST (Verify Intent)
-- ⚠️ Change default check frequency (`--frequency` default or config.ini)
-- ⚠️ Modify email notification logic (user may have specific SMTP setup)
 - ⚠️ Enable auto-booking by default (currently requires manual confirmation)
 - ⚠️ Add new dependencies to `requirements.txt` (check if lightweight alternatives exist)
 - ⚠️ Alter config.ini structure (existing users have this file set up)
