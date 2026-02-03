@@ -397,7 +397,7 @@ class VisaAppointmentChecker:
         (By.CSS_SELECTOR, "select[id*='consulate_appointment_time']"),
     ]
 
-    LOCATION_SELECTORS: List[Selector] = [
+    ADDRESS_SELECTORS: List[Selector] = [
         (By.ID, "appointments_consulate_address"),
         (By.CSS_SELECTOR, "select[id*='consulate_address']"),
         (By.CSS_SELECTOR, "select[name*='consulate_address']"),
