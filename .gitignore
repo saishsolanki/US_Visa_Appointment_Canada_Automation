@@ -1,0 +1,26 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+visa_env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Configuration with secrets
+config.ini
+
+# Logs and artifacts
+logs/
+artifacts/
+*.log
+
+# Pattern learning data
+appointment_patterns.json
