@@ -622,16 +622,21 @@ class VisaAppointmentChecker:
     CONSULATE_BUSY_SELECTORS: List[Selector] = [
         (By.ID, "consulate_date_time_not_available"),
         (By.CSS_SELECTOR, "#consulate_date_time_not_available small"),
+        (By.CSS_SELECTOR, ".display-none.error small"),
+        (By.XPATH, "//div[@id='consulate_date_time_not_available' and contains(@style, 'display: block')]"),
     ]
 
     CONSULATE_DATE_INPUT_SELECTORS: List[Selector] = [
         (By.ID, "appointments_consulate_appointment_date"),
         (By.CSS_SELECTOR, "input[id*='consulate_appointment_date']"),
+        (By.CSS_SELECTOR, "input.hasDatepicker[readonly='readonly']"),
+        (By.CSS_SELECTOR, "input[name='appointments[consulate_appointment][date]']"),
     ]
 
     CONSULATE_TIME_SELECTORS: List[Selector] = [
         (By.ID, "appointments_consulate_appointment_time"),
         (By.CSS_SELECTOR, "select[id*='consulate_appointment_time']"),
+        (By.CSS_SELECTOR, "select[name='appointments[consulate_appointment][time]']"),
     ]
 
     ADDRESS_SELECTORS: List[Selector] = [
@@ -643,7 +648,25 @@ class VisaAppointmentChecker:
     DATEPICKER_CONTAINER_SELECTORS: List[Selector] = [
         (By.ID, "ui-datepicker-div"),
         (By.CSS_SELECTOR, "#ui-datepicker-div"),
+        (By.CSS_SELECTOR, ".ui-datepicker"),
     ]
+
+    CALENDAR_ICON_SELECTORS: List[Selector] = [
+        (By.CSS_SELECTOR, "a[href='#select'] img.calendar_icon"),
+        (By.CSS_SELECTOR, "img.calendar_icon"),
+        (By.CSS_SELECTOR, "a[href='#select']"),
+    ]
+    
+    # Facility ID mapping based on AIS portal (for backup/debugging)
+    FACILITY_ID_MAP: Dict[str, str] = {
+        "Calgary": "89",
+        "Halifax": "90",
+        "Montreal": "91",
+        "Ottawa": "92",
+        "Quebec City": "93",
+        "Toronto": "94",
+        "Vancouver": "95",
+    }
 
     DATEPICKER_AVAILABLE_DAY_SELECTORS: List[Selector] = [
         (By.CSS_SELECTOR, "#ui-datepicker-div td:not(.ui-state-disabled) a"),
@@ -1292,11 +1315,23 @@ class VisaAppointmentChecker:
             try:
                 select.select_by_visible_text(self.cfg.location)
                 logging.info("Selected consular location by exact match: %s", self.cfg.location)
+                time.sleep(0.5)  # Allow UI to update
                 return
             except NoSuchElementException:
                 pass
 
-            # Try fuzzy matching
+            # Try matching by facility ID if location name matches our map
+            for location_name, facility_id in self.FACILITY_ID_MAP.items():
+                if normalized_target in location_name.lower() or location_name.lower() in normalized_target:
+                    try:
+                        select.select_by_value(facility_id)
+                        logging.info("Selected consular location by facility ID %s: %s", facility_id, location_name)
+                        time.sleep(0.5)  # Allow UI to update
+                        return
+                    except NoSuchElementException:
+                        pass
+
+            # Try fuzzy matching on visible text
             for option in select.options:
                 option_text = option.text.strip()
                 if not option_text:
@@ -1304,6 +1339,7 @@ class VisaAppointmentChecker:
                 if normalized_target in option_text.lower() or option_text.lower() in normalized_target:
                     select.select_by_visible_text(option_text)
                     logging.info("Selected consular location using fuzzy match: %s", option_text)
+                    time.sleep(0.5)  # Allow UI to update
                     return
 
             logging.warning(
@@ -1390,23 +1426,37 @@ class VisaAppointmentChecker:
             
             if busy_element := self._is_selector_visible(self.CONSULATE_BUSY_SELECTORS):
                 message = busy_element.text.strip() or message
+            
+            # Check for "display: block" to confirm it's actually showing
+            busy_visible = False
+            try:
+                busy_div = driver.find_element(By.ID, "consulate_date_time_not_available")
+                display_style = busy_div.get_attribute("style") or ""
+                busy_visible = "display: none" not in display_style.lower()
+            except Exception:
+                busy_visible = True  # Assume visible if we can't check
+            
+            if busy_visible:
+                logging.info("⚠️ Consular calendar busy: %s", message)
                 
-            logging.info("Consular calendar message: %s", message)
-            
-            # Record busy event for pattern learning
-            self._record_availability_event("busy")
-            
-            # Adaptive frequency adjustment for repeated busy responses
-            if self._busy_streak_count >= 3:
-                old_freq = self._adaptive_frequency
-                self._adaptive_frequency = min(60, self._adaptive_frequency * 1.2)
-                if self._adaptive_frequency != old_freq:
-                    logging.info("Adaptive frequency increased to %.1f minutes due to persistent busy status", 
-                               self._adaptive_frequency)
-            
-            self._schedule_backoff()
-            self._capture_artifact("consulate_busy")
-            return
+                # Record busy event for pattern learning
+                self._record_availability_event("busy")
+                
+                # Adaptive frequency adjustment for repeated busy responses
+                if self._busy_streak_count >= 3:
+                    old_freq = self._adaptive_frequency
+                    self._adaptive_frequency = min(60, self._adaptive_frequency * 1.2)
+                    if self._adaptive_frequency != old_freq:
+                        logging.info("Adaptive frequency increased to %.1f minutes due to persistent busy status", 
+                                   self._adaptive_frequency)
+                
+                self._schedule_backoff()
+                self._capture_artifact("consulate_busy")
+                return
+            else:
+                logging.debug("Busy element exists but is hidden, proceeding with calendar check")
+                # Reset busy streak as it's not actually busy
+                self._busy_streak_count = 0
         else:
             # Calendar is accessible!
             if self._busy_streak_count > 5:  # Only alert if we've been seeing busy for a while
@@ -1436,12 +1486,37 @@ class VisaAppointmentChecker:
         if current_value:
             logging.info("Current appointment date pre-filled on form: %s", current_value)
 
+        # Try multiple methods to open the calendar
+        calendar_opened = False
         try:
             date_input.click()
+            time.sleep(0.3)
+            calendar_opened = self._is_selector_visible(self.DATEPICKER_CONTAINER_SELECTORS) is not None
         except (WebDriverException, ElementNotInteractableException):
-            driver.execute_script("arguments[0].click();", date_input)
+            logging.debug("Direct click on date input failed, trying alternatives")
 
-        time.sleep(0.5)  # Reduced sleep time
+        # If direct click didn't work, try clicking the calendar icon
+        if not calendar_opened:
+            try:
+                calendar_icon = self._find_element(self.CALENDAR_ICON_SELECTORS, wait_time=2)
+                if calendar_icon:
+                    logging.debug("Attempting to open calendar via calendar icon")
+                    calendar_icon.click()
+                    time.sleep(0.3)
+                    calendar_opened = self._is_selector_visible(self.DATEPICKER_CONTAINER_SELECTORS) is not None
+            except (WebDriverException, ElementNotInteractableException):
+                pass
+
+        # Last resort: JavaScript click
+        if not calendar_opened:
+            try:
+                logging.debug("Using JavaScript to trigger calendar")
+                driver.execute_script("arguments[0].focus(); arguments[0].click();", date_input)
+                time.sleep(0.3)
+            except Exception as exc:
+                logging.warning("Failed to open calendar with all methods: %s", exc)
+
+        time.sleep(0.5)  # Allow calendar to fully render
 
         available_slots = self._collect_available_dates(max_months=3)
         if available_slots:
