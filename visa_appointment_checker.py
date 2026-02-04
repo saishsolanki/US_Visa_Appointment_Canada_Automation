@@ -884,10 +884,10 @@ class VisaAppointmentChecker:
         
         if self._is_prime_time():
             # More frequent during optimal windows
-            return max(1.0, base_freq * 0.5)  # 50% more frequent
+            return max(1.0, base_freq * 0.5)  # 2x more frequent (half the interval)
         elif 2 <= datetime.now().hour <= 6:
             # Less frequent during low-activity hours
-            return base_freq * 2.0  # 50% less frequent  
+            return base_freq * 2.0  # 2x less frequent (double the interval)
         elif datetime.now().weekday() in [5, 6]:  # Weekend
             return base_freq * self.cfg.weekend_frequency_multiplier
         else:
@@ -1557,7 +1557,8 @@ class VisaAppointmentChecker:
             self._last_busy_check = datetime.now()
             message = "System is busy. Please try again later."
             
-            if busy_element := self._is_selector_visible(self.CONSULATE_BUSY_SELECTORS):
+            busy_element = self._is_selector_visible(self.CONSULATE_BUSY_SELECTORS)
+            if busy_element:
                 message = busy_element.text.strip() or message
             
             # Check for "display: block" to confirm it's actually showing
@@ -1654,6 +1655,8 @@ class VisaAppointmentChecker:
         available_slots = self._collect_available_dates(max_months=3)
         if available_slots:
             logging.info("Discovered available appointment dates: %s", ", ".join(available_slots))
+            # Check if any available slots are better than current appointment
+            self._evaluate_available_dates(available_slots)
         else:
             logging.info("No selectable appointment dates found in the scanned calendar window")
 
@@ -1683,7 +1686,7 @@ class VisaAppointmentChecker:
             return available
 
         for month_index in range(max_months):
-            if not calendar.is_displayed():
+            if calendar is None or not calendar.is_displayed():
                 break
 
             title_elements = calendar.find_elements(By.CSS_SELECTOR, ".ui-datepicker-title")
@@ -1712,6 +1715,99 @@ class VisaAppointmentChecker:
                 break
 
         return available
+
+    def _evaluate_available_dates(self, available_slots: List[str]) -> None:
+        """Evaluate discovered dates against current appointment and user preferences.
+        
+        Sends notifications when better appointments are found.
+        """
+        try:
+            current_date = datetime.strptime(self.cfg.current_appointment_date, "%Y-%m-%d")
+            start_date = datetime.strptime(self.cfg.start_date, "%Y-%m-%d")
+            end_date = datetime.strptime(self.cfg.end_date, "%Y-%m-%d")
+        except ValueError as exc:
+            logging.warning("Invalid date format in configuration: %s", exc)
+            return
+
+        earlier_dates = []
+        dates_in_range = []
+        
+        for slot in available_slots:
+            # Parse the slot format "Month Year Day" (e.g., "January 2025 15")
+            parsed_date = self._parse_calendar_date(slot)
+            if not parsed_date:
+                continue
+                
+            # Check if date is within user's preferred range
+            if start_date <= parsed_date <= end_date:
+                dates_in_range.append(parsed_date)
+                
+                # Check if date is earlier than current appointment
+                if parsed_date < current_date:
+                    earlier_dates.append(parsed_date)
+
+        if earlier_dates:
+            earliest = min(earlier_dates)
+            days_earlier = (current_date - earliest).days
+            
+            logging.info("🎉 EARLIER APPOINTMENT FOUND! %s (%.0f days earlier than current)", 
+                        earliest.strftime("%Y-%m-%d"), days_earlier)
+            
+            # Record this availability event
+            self._record_availability_event("earlier_date_found")
+            
+            # Send notification
+            subject = f"🎉 Earlier Visa Appointment Available! ({days_earlier} days earlier)"
+            message = (
+                f"An earlier visa appointment has been found!\n\n"
+                f"📅 Available Date: {earliest.strftime('%B %d, %Y')}\n"
+                f"📍 Location: {self.cfg.location}\n"
+                f"⏰ Days Earlier: {days_earlier} days\n\n"
+                f"Current Appointment: {self.cfg.current_appointment_date}\n"
+                f"Target Range: {self.cfg.start_date} to {self.cfg.end_date}\n\n"
+                f"All earlier dates found: {', '.join(d.strftime('%Y-%m-%d') for d in sorted(earlier_dates))}\n\n"
+                f"{'🤖 Auto-book is ENABLED - attempting to book...' if self.cfg.auto_book else '⚠️ Login to book manually: https://ais.usvisa-info.com'}"
+            )
+            send_notification(self.cfg, subject, message)
+            
+            # If auto-book is enabled, we would implement booking here
+            # TODO: Implement auto-booking functionality
+            if self.cfg.auto_book:
+                logging.warning("Auto-book is enabled but not yet implemented. Please book manually.")
+                
+        elif dates_in_range:
+            logging.info("Found %d dates in target range, but none earlier than current appointment (%s)", 
+                        len(dates_in_range), self.cfg.current_appointment_date)
+        else:
+            logging.debug("No available dates fall within target range %s to %s", 
+                         self.cfg.start_date, self.cfg.end_date)
+
+    def _parse_calendar_date(self, slot: str) -> Optional[datetime]:
+        """Parse calendar date string like 'January 2025 15' into datetime."""
+        try:
+            # Try common formats
+            # Format: "Month Year Day" (e.g., "January 2025 15")
+            parts = slot.split()
+            if len(parts) >= 3:
+                month_str = parts[0]
+                year_str = parts[1]
+                day_str = parts[-1]
+                
+                # Handle cases where year might be part of month string
+                date_str = f"{month_str} {day_str}, {year_str}"
+                return datetime.strptime(date_str, "%B %d, %Y")
+        except (ValueError, IndexError):
+            pass
+        
+        # Try other formats
+        for fmt in ["%B %Y %d", "%B %d, %Y", "%Y-%m-%d", "%d %B %Y"]:
+            try:
+                return datetime.strptime(slot.strip(), fmt)
+            except ValueError:
+                continue
+        
+        logging.debug("Could not parse date from calendar slot: %s", slot)
+        return None
 
     def _is_selector_visible(self, selectors: List[Selector]):
         driver = self.ensure_driver()
