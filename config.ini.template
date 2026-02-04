@@ -36,6 +36,8 @@ weekend_frequency_multiplier = 2.0
 pattern_learning_enabled = True
 
 # Gmail SMTP settings for notifications
+# IMPORTANT: Use an App Password, NOT your regular Gmail password
+# Create one at: https://myaccount.google.com/apppasswords
 smtp_server = smtp.gmail.com
 smtp_port = 587
 smtp_user = your_gmail@gmail.com
@@ -49,3 +51,13 @@ auto_book = False
 driver_restart_checks = 50
 max_retry_attempts = 2
 sleep_jitter_seconds = 60
+
+# Advanced Settings (usually don't need to change)
+# retry_backoff_seconds = 5
+# busy_backoff_min_minutes = 10
+# busy_backoff_max_minutes = 15
+# abort_on_captcha = False
+
+# Progress Report Settings
+# Set to 0 to disable periodic email reports
+# progress_report_interval_hours = 6

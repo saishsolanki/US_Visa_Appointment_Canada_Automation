@@ -1,0 +1,23 @@
+# Git ignore patterns
+config.ini
+logs/
+artifacts/
+visa_env/
+__pycache__/
+*.pyc
+*.log
+*.png
+*.html
+
+# Docker specific
+.dockerignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

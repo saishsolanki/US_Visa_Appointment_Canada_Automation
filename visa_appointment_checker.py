@@ -5,15 +5,18 @@ import logging
 import os
 import random
 import smtplib
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from email import encoders
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
 from urllib.parse import urljoin
-
-from email.mime.text import MIMEText
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -260,6 +263,240 @@ def send_notification(cfg: CheckerConfig, subject: str, message: str) -> bool:
         logging.exception("Failed to send email notification: %s", exc)
 
     return False
+
+
+class ProgressReporter:
+    """
+    Background thread that sends periodic progress reports via email.
+    
+    Reports include:
+    - Check statistics (success/failure counts)
+    - Recent log entries
+    - System health status
+    - Log file attachment
+    """
+    
+    def __init__(self, cfg: CheckerConfig, interval_hours: float = 6.0):
+        self.cfg = cfg
+        self.interval_hours = interval_hours
+        self.last_report_time = datetime.now()
+        self.start_time = datetime.now()
+        self.running = False
+        self.thread: Optional[threading.Thread] = None
+        self._check_count = 0
+        self._success_count = 0
+        self._failure_count = 0
+        self._captcha_count = 0
+        self._lock = threading.Lock()
+    
+    def start(self) -> None:
+        """Start the background reporter thread."""
+        if self.running:
+            return
+        self.running = True
+        self.thread = threading.Thread(target=self._report_loop, daemon=True, name="ProgressReporter")
+        self.thread.start()
+        logging.info("📊 Progress reporter started (interval: %.1f hours)", self.interval_hours)
+    
+    def stop(self) -> None:
+        """Stop the reporter thread."""
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=5)
+            logging.info("📊 Progress reporter stopped")
+    
+    def record_check(self, success: bool, captcha: bool = False) -> None:
+        """Thread-safe method to record check results."""
+        with self._lock:
+            self._check_count += 1
+            if success:
+                self._success_count += 1
+            else:
+                self._failure_count += 1
+            if captcha:
+                self._captcha_count += 1
+    
+    def _report_loop(self) -> None:
+        """Background loop that sends reports at configured intervals."""
+        while self.running:
+            # Sleep in small increments to allow quick shutdown
+            for _ in range(60):  # Check every second for 1 minute
+                if not self.running:
+                    return
+                time.sleep(1)
+            
+            elapsed = datetime.now() - self.last_report_time
+            if elapsed >= timedelta(hours=self.interval_hours):
+                try:
+                    self._send_progress_report()
+                    self.last_report_time = datetime.now()
+                except Exception as exc:
+                    logging.error("Failed to send progress report: %s", exc)
+    
+    def _get_stats(self) -> Dict[str, Any]:
+        """Get current statistics thread-safely."""
+        with self._lock:
+            total = max(1, self._check_count)
+            return {
+                'total_checks': self._check_count,
+                'successful_checks': self._success_count,
+                'failed_checks': self._failure_count,
+                'captcha_count': self._captcha_count,
+                'success_rate': self._success_count / total,
+            }
+    
+    def _format_uptime(self) -> str:
+        """Format uptime in human-readable form."""
+        elapsed = datetime.now() - self.start_time
+        days = elapsed.days
+        hours, remainder = divmod(elapsed.seconds, 3600)
+        minutes, _ = divmod(remainder, 60)
+        
+        parts = []
+        if days > 0:
+            parts.append(f"{days}d")
+        if hours > 0:
+            parts.append(f"{hours}h")
+        parts.append(f"{minutes}m")
+        return " ".join(parts)
+    
+    def _read_recent_logs(self, num_lines: int = 100) -> str:
+        """Read the last N lines from the log file."""
+        log_path = LOG_PATH
+        try:
+            if log_path.exists():
+                with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
+                    lines = f.readlines()
+                    return ''.join(lines[-num_lines:])
+        except Exception as exc:
+            return f"Error reading log file: {exc}"
+        return "No log file found"
+    
+    def _extract_key_events(self, log_tail: str) -> List[str]:
+        """Extract key events from recent logs."""
+        keywords = [
+            'available', 'appointment found', 'earlier date',
+            'captcha', 'error', 'failed', 'session expired',
+            'login successful', 'notification sent'
+        ]
+        events = []
+        for line in log_tail.split('\n'):
+            line_lower = line.lower()
+            if any(kw in line_lower for kw in keywords):
+                # Clean up the line
+                line = line.strip()
+                if line and len(line) < 200:  # Skip very long lines
+                    events.append(line)
+        return events[-15:]  # Last 15 key events
+    
+    def _send_progress_report(self) -> None:
+        """Send email with progress summary and log attachment."""
+        if not self.cfg.is_smtp_configured():
+            logging.debug("SMTP not configured; skipping progress report")
+            return
+        
+        stats = self._get_stats()
+        log_tail = self._read_recent_logs(200)
+        key_events = self._extract_key_events(log_tail)
+        
+        # Determine status emoji
+        success_rate = stats['success_rate']
+        if success_rate >= 0.9:
+            status_emoji = "✅"
+            status_text = "Excellent - Running smoothly"
+        elif success_rate >= 0.7:
+            status_emoji = "⚠️"
+            status_text = "Good - Some failures detected"
+        elif success_rate >= 0.5:
+            status_emoji = "🟡"
+            status_text = "Fair - Investigate errors"
+        else:
+            status_emoji = "❌"
+            status_text = "Poor - Requires attention"
+        
+        subject = f"🤖 Visa Checker Report - {datetime.now().strftime('%Y-%m-%d %H:%M')} [{status_emoji}]"
+        
+        body = f"""
+US Visa Appointment Checker - Progress Report
+{'=' * 50}
+
+{status_emoji} Status: {status_text}
+📅 Report Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+⏱️  Uptime: {self._format_uptime()}
+
+📊 STATISTICS (Since Last Report)
+{'-' * 40}
+  Total Checks:      {stats['total_checks']:,}
+  ✅ Successful:     {stats['successful_checks']:,} ({stats['success_rate']:.1%})
+  ❌ Failed:         {stats['failed_checks']:,}
+  🤖 Captcha Blocks: {stats['captcha_count']:,}
+
+📍 CONFIGURATION
+{'-' * 40}
+  Location:          {self.cfg.location}
+  Current Appt:      {self.cfg.current_appointment_date}
+  Target Range:      {self.cfg.start_date} to {self.cfg.end_date}
+  Check Frequency:   ~{self.cfg.check_frequency_minutes} minutes
+  Auto-book:         {'Enabled' if self.cfg.auto_book else 'Disabled'}
+
+🔍 KEY EVENTS (Recent Activity)
+{'-' * 40}
+"""
+        if key_events:
+            for event in key_events:
+                # Truncate long events
+                if len(event) > 100:
+                    event = event[:100] + "..."
+                body += f"  • {event}\n"
+        else:
+            body += "  No significant events detected\n"
+        
+        body += f"""
+📋 NEXT ACTIONS
+{'-' * 40}
+  • Next report in: {self.interval_hours:.1f} hours
+  • View full logs: Check attached file or logs/visa_checker.log
+
+{'=' * 50}
+🐳 Running in: {'Docker' if os.path.exists('/.dockerenv') else 'Native mode'}
+📝 Full log file attached below
+"""
+        
+        self._send_email_with_attachment(subject, body)
+        logging.info("📧 Progress report sent successfully")
+    
+    def _send_email_with_attachment(self, subject: str, body: str) -> None:
+        """Send email with log file attached."""
+        msg = MIMEMultipart()
+        msg['Subject'] = subject
+        msg['From'] = self.cfg.smtp_user
+        msg['To'] = self.cfg.notify_email
+        
+        # Attach body text
+        msg.attach(MIMEText(body, 'plain', 'utf-8'))
+        
+        # Attach log file if it exists
+        log_path = LOG_PATH
+        if log_path.exists() and log_path.stat().st_size > 0:
+            try:
+                with open(log_path, 'rb') as f:
+                    part = MIMEBase('application', 'octet-stream')
+                    part.set_payload(f.read())
+                
+                encoders.encode_base64(part)
+                part.add_header(
+                    'Content-Disposition',
+                    f'attachment; filename=visa_checker_{datetime.now().strftime("%Y%m%d_%H%M")}.log'
+                )
+                msg.attach(part)
+            except Exception as exc:
+                logging.warning("Failed to attach log file: %s", exc)
+        
+        # Send email
+        with smtplib.SMTP(self.cfg.smtp_server, self.cfg.smtp_port) as server:
+            server.starttls()
+            server.login(self.cfg.smtp_user, self.cfg.smtp_pass)
+            server.sendmail(self.cfg.smtp_user, self.cfg.notify_email, msg.as_string())
 
 
 class VisaAppointmentChecker:
@@ -1855,11 +2092,18 @@ def main() -> None:
         action="store_false",
         help="Run Chrome in visible mode (useful for debugging or solving CAPTCHA).",
     )
+    parser.add_argument(
+        "--report-interval",
+        type=float,
+        default=6.0,
+        help="Hours between progress report emails (default: 6). Set to 0 to disable.",
+    )
     parser.set_defaults(headless=True)
     args = parser.parse_args()
 
     frequency = max(1, args.frequency)
     headless = args.headless
+    report_interval = max(0, args.report_interval)
 
     print("🚀 US Visa Appointment Checker Started - OPTIMIZED")
     print("=" * 55)
@@ -1869,6 +2113,7 @@ def main() -> None:
         backup_locs = [loc.strip() for loc in cfg.backup_locations.split(',') if loc.strip()]
         print(f"🌎 Backup locations: {', '.join(backup_locs[:2])}{'...' if len(backup_locs) > 2 else ''}")
     print(f"⏱️  Base frequency: {frequency} minutes")
+    print(f"📊 Progress reports: Every {report_interval:.1f} hours" if report_interval > 0 else "📊 Progress reports: Disabled")
     print(f"🎯 Strategic optimization: {'Enabled' if cfg.burst_mode_enabled else 'Disabled'}")
     print(f"🕐 Prime time optimization: {'Enabled' if cfg.prime_hours_start else 'Disabled'}")
     print(f"📧 Notifications: {'Enabled' if cfg.is_smtp_configured() else 'Disabled (configure SMTP)'}")
@@ -1881,6 +2126,12 @@ def main() -> None:
         logging.info("Heartbeat file: %s", cfg.heartbeat_path)
 
     checker = VisaAppointmentChecker(cfg, headless=headless)
+    
+    # Start progress reporter if interval > 0 and SMTP is configured
+    reporter: Optional[ProgressReporter] = None
+    if report_interval > 0 and cfg.is_smtp_configured():
+        reporter = ProgressReporter(cfg, interval_hours=report_interval)
+        reporter.start()
 
     check_count = 0
     try:
@@ -1891,12 +2142,20 @@ def main() -> None:
             print("-" * 30)
 
             success = False
+            captcha_detected = False
             try:
                 checker.perform_check()
                 print(f"✅ Check #{check_count} completed successfully")
                 success = True
+            except CaptchaDetectedError as exc:
+                print(f"🤖 Check #{check_count} blocked by captcha: {exc}")
+                captcha_detected = True
             except Exception as exc:  # noqa: BLE001
                 print(f"❌ Check #{check_count} failed: {exc}")
+
+            # Record stats for progress reporter
+            if reporter:
+                reporter.record_check(success=success, captcha=captcha_detected)
 
             checker.post_check(success=success)
 
@@ -1912,6 +2171,8 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\n🛑 Stopping visa appointment checker (KeyboardInterrupt)")
     finally:
+        if reporter:
+            reporter.stop()
         checker.quit_driver()
         print("🧹 Browser session closed")
 

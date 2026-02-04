@@ -1,0 +1,72 @@
+# US Visa Appointment Checker - Docker Compose Configuration
+# 
+# Quick Start:
+#   1. Copy config.ini.template to config.ini and edit with your credentials
+#   2. Run: docker compose up -d
+#   3. View logs: docker compose logs -f
+#   4. Stop: docker compose down
+#
+# For development/debugging:
+#   docker compose run --rm visa-checker python3 visa_appointment_checker.py --no-headless
+
+services:
+  visa-checker:
+    build: .
+    container_name: visa-checker
+    restart: unless-stopped
+    
+    # Mount volumes for persistence
+    volumes:
+      # Persist logs on host machine (viewable without entering container)
+      - ./logs:/app/logs
+      # Persist screenshots/artifacts for debugging
+      - ./artifacts:/app/artifacts
+      # Mount config file (read-only for security)
+      - ./config.ini:/app/config.ini:ro
+    
+    # Environment variables (override config.ini if needed)
+    environment:
+      # Timezone for accurate log timestamps
+      - TZ=${TZ:-America/Toronto}
+      # User agent for browser
+      - CHECKER_USER_AGENT=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36
+      # Optional: Override check frequency via environment
+      # - CHECK_FREQUENCY_MINUTES=5
+    
+    # Resource limits to prevent runaway memory usage
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.25'
+          memory: 512M
+    
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    
+    # Shared memory size (required for Chrome)
+    shm_size: '256m'
+    
+    # Logging configuration (prevent log files from growing too large)
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "test", "-f", "/app/logs/visa_checker.log"]
+      interval: 2m
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+# Named volumes (alternative to bind mounts)
+# Uncomment if you prefer Docker-managed volumes
+# volumes:
+#   visa-logs:
+#   visa-artifacts:
