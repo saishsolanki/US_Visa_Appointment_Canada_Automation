@@ -30,6 +30,8 @@ services:
       - TZ=${TZ:-America/Toronto}
       # User agent for browser
       - CHECKER_USER_AGENT=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36
+      # Debug mode - set to true for verbose logging and debug captures
+      - DEBUG_MODE=${DEBUG_MODE:-false}
       # Optional: Override check frequency via environment
       # - CHECK_FREQUENCY_MINUTES=5
     

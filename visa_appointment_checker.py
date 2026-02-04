@@ -45,6 +45,9 @@ RESCHEDULE_URLS = [
 # Keep webdriver-manager quiet unless user overrides
 os.environ.setdefault("WDM_LOG_LEVEL", "0")
 
+# Enable debug mode via environment variable
+DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
+
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
 LOG_PATH = LOG_DIR / "visa_checker.log"
@@ -52,14 +55,20 @@ LOG_PATH = LOG_DIR / "visa_checker.log"
 ARTIFACTS_DIR = Path("artifacts")
 ARTIFACTS_DIR.mkdir(exist_ok=True)
 
+# Set log level based on debug mode
+log_level = logging.DEBUG if DEBUG_MODE else logging.INFO
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=log_level,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
         RotatingFileHandler(LOG_PATH, maxBytes=5 * 1024 * 1024, backupCount=5),
         logging.StreamHandler(),
     ],
 )
+
+if DEBUG_MODE:
+    logging.info("🔍 DEBUG MODE ENABLED - Verbose logging active")
 
 logging.info("Visa checker logs will rotate under %s", LOG_PATH.resolve())
 
@@ -1190,7 +1199,8 @@ class VisaAppointmentChecker:
                 logging.warning(
                     "Location selector not found; page layout may have changed or location already locked."
                 )
-                self._capture_artifact("missing_location_selector")
+                # Capture comprehensive debug info when location selector is missing
+                self._capture_debug_state("missing_location_selector")
 
     def _handle_group_continue(self) -> None:
         driver = self.ensure_driver()
@@ -1321,7 +1331,8 @@ class VisaAppointmentChecker:
             "Unable to open reschedule appointment workflow automatically; remaining on %s",
             driver.current_url,
         )
-        self._capture_artifact("reschedule_navigation_failed")
+        # Capture comprehensive debug information when reschedule fails
+        self._capture_debug_state("reschedule_navigation_failed")
 
     def _ensure_on_appointment_form(self) -> bool:
         """Check if we're on the appointment form page.
@@ -1495,6 +1506,8 @@ class VisaAppointmentChecker:
     def _check_consulate_availability(self) -> None:
         driver = self.ensure_driver()
         check_start = datetime.now()
+        
+        logging.debug("Starting consulate availability check at %s", driver.current_url)
 
         try:
             WebDriverWait(driver, 20).until(
@@ -1505,6 +1518,8 @@ class VisaAppointmentChecker:
             )
         except TimeoutException:
             logging.warning("Consular appointment widgets did not load within the expected time window")
+            # Capture comprehensive debug info when widgets don't load
+            self._capture_debug_state("widgets_not_loaded")
             return
 
         # Intelligent calendar polling with adaptive frequency
@@ -2055,13 +2070,99 @@ class VisaAppointmentChecker:
 
         try:
             base.with_suffix(".html").write_text(driver.page_source, encoding="utf-8")
+            logging.info("📄 Saved HTML artifact: %s", base.with_suffix(".html"))
         except Exception as exc:  # noqa: BLE001
             logging.debug("Failed to persist page source artifact: %s", exc)
 
         try:
             driver.save_screenshot(str(base.with_suffix(".png")))
+            logging.info("📸 Saved screenshot: %s", base.with_suffix(".png"))
         except Exception as exc:  # noqa: BLE001
             logging.debug("Failed to capture screenshot artifact: %s", exc)
+
+    def _capture_debug_state(self, label: str) -> None:
+        """Capture comprehensive debug information about current page state.
+        
+        This captures:
+        - Current URL
+        - Page title
+        - Key element visibility
+        - Screenshot and HTML
+        - Console logs (if available)
+        """
+        driver = self.driver
+        if driver is None:
+            logging.debug("Cannot capture debug state: driver is None")
+            return
+
+        logging.info("=" * 60)
+        logging.info("🔍 DEBUG STATE CAPTURE: %s", label)
+        logging.info("=" * 60)
+        
+        # Basic page info
+        try:
+            logging.info("📍 Current URL: %s", driver.current_url)
+            logging.info("📄 Page Title: %s", driver.title)
+        except Exception as exc:
+            logging.warning("Failed to get basic page info: %s", exc)
+
+        # Check for key elements
+        element_checks = [
+            ("Location Selector", self.LOCATION_SELECTORS),
+            ("Date Input", self.CONSULATE_DATE_INPUT_SELECTORS),
+            ("Busy Message", self.CONSULATE_BUSY_SELECTORS),
+            ("Appointment Form", self.APPOINTMENT_FORM_SELECTORS),
+            ("Reschedule Button", self.RESCHEDULE_BUTTON_SELECTORS),
+            ("Sign In Button", self.SIGN_IN_SELECTORS),
+        ]
+        
+        logging.info("🔎 Element Visibility Check:")
+        for name, selectors in element_checks:
+            found = self._find_element(selectors, wait_time=2)
+            status = "✅ FOUND" if found else "❌ NOT FOUND"
+            if found:
+                try:
+                    tag = found.tag_name
+                    visible = found.is_displayed()
+                    enabled = found.is_enabled()
+                    logging.info("   %s: %s (tag=%s, visible=%s, enabled=%s)", 
+                               name, status, tag, visible, enabled)
+                except Exception:
+                    logging.info("   %s: %s (could not get details)", name, status)
+            else:
+                logging.info("   %s: %s", name, status)
+
+        # Check for common page indicators
+        try:
+            page_source = driver.page_source.lower()
+            indicators = [
+                ("Login Form", "user[email]" in page_source or "sign_in" in page_source),
+                ("Appointment Form", "consulate_appointment" in page_source),
+                ("Calendar Busy", "not_available" in page_source or "no appointments" in page_source.lower()),
+                ("CAPTCHA", "captcha" in page_source or "recaptcha" in page_source),
+                ("Error Message", "error" in page_source and "alert" in page_source),
+            ]
+            logging.info("🔎 Page Content Indicators:")
+            for name, present in indicators:
+                status = "✅ PRESENT" if present else "❌ NOT PRESENT"
+                logging.info("   %s: %s", name, status)
+        except Exception as exc:
+            logging.warning("Failed to check page content indicators: %s", exc)
+
+        # Try to get console logs
+        try:
+            logs = driver.get_log('browser')
+            if logs:
+                logging.info("🖥️ Browser Console Logs (last 5):")
+                for log in logs[-5:]:
+                    logging.info("   [%s] %s", log.get('level', 'UNKNOWN'), log.get('message', '')[:200])
+        except Exception:
+            pass  # Not all browsers support this
+
+        # Capture artifacts
+        self._capture_artifact(f"debug_{label}")
+        
+        logging.info("=" * 60)
 
     def _update_heartbeat(self, status: str) -> None:
         if not self._heartbeat_path:
