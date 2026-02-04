@@ -1159,6 +1159,7 @@ class VisaAppointmentChecker:
     def _navigate_to_schedule(self, driver: webdriver.Chrome) -> None:
         self._handle_group_continue()
 
+        schedule_found = False
         for url in RESCHEDULE_URLS:
             try:
                 logging.info("Navigating to scheduling page candidate: %s", url)
@@ -1173,12 +1174,16 @@ class VisaAppointmentChecker:
                 if any(token in current for token in ("schedule", "appointment")):
                     logging.info("Reached scheduling page: %s", driver.current_url)
                     self._open_reschedule_flow()
+                    schedule_found = True
                     break
             except TimeoutException:
                 logging.warning("Timeout while loading %s; trying next", url)
             except WebDriverException as exc:
                 logging.warning("Browser navigation error for %s: %s", url, exc)
-        else:
+        
+        if not schedule_found:
+            logging.error("Failed to reach scheduling page. Current URL: %s", driver.current_url)
+            self._capture_debug_state("scheduling_navigation_failed")
             raise RuntimeError("Failed to reach scheduling page")
 
         # Wait for page to fully load after navigation
@@ -1188,14 +1193,14 @@ class VisaAppointmentChecker:
         # Cache form elements when we reach the appointment page for future use
         self._cache_form_elements()
         
-        # Try to find location selector with longer wait
-        location_select = self._find_element(self.LOCATION_SELECTORS, wait_time=30, use_cache=True)
+        # Try to find location selector with SHORTER wait to fail fast
+        location_select = self._find_element(self.LOCATION_SELECTORS, wait_time=10, use_cache=True)
         if location_select:
             self._ensure_location_selected(location_select)
             logging.info("Location selector found and configured")
         else:
             # Try alternative: check if we're on the right page by looking for the date input
-            date_input = self._find_element(self.CONSULATE_DATE_INPUT_SELECTORS, wait_time=10)
+            date_input = self._find_element(self.CONSULATE_DATE_INPUT_SELECTORS, wait_time=5)
             if date_input:
                 logging.info("Date picker found, location may be pre-selected or single location")
             else:
@@ -1291,7 +1296,7 @@ class VisaAppointmentChecker:
             if self._ensure_on_appointment_form():
                 return
 
-        reschedule_button = self._find_element(self.RESCHEDULE_BUTTON_SELECTORS, wait_time=20, clickable=False)
+        reschedule_button = self._find_element(self.RESCHEDULE_BUTTON_SELECTORS, wait_time=10, clickable=False)
         if reschedule_button:
             href = ""
             try:
@@ -1337,40 +1342,60 @@ class VisaAppointmentChecker:
         # Capture comprehensive debug information when reschedule fails
         self._capture_debug_state("reschedule_navigation_failed")
 
-    def _ensure_on_appointment_form(self) -> bool:
+    def _ensure_on_appointment_form(self, max_wait: int = 15) -> bool:
         """Check if we're on the appointment form page.
         
-        Uses multiple strategies with progressively longer waits to detect the form.
+        Uses multiple strategies with SHORT waits to quickly detect the form.
+        Returns False quickly if form elements are not found.
+        
+        Args:
+            max_wait: Maximum seconds to spend looking for form elements (default 15)
         """
         driver = self.ensure_driver()
         current_url = driver.current_url.lower()
         
         # Quick URL check - if we're still on login, definitely not on form
         if "sign_in" in current_url:
+            logging.debug("Still on sign_in page, not on appointment form")
             return False
         
-        # First check using standard selectors with longer wait
-        form = self._find_element(self.APPOINTMENT_FORM_SELECTORS, wait_time=10)
+        # URL must contain appointment or schedule keywords
+        if not any(token in current_url for token in ("appointment", "schedule")):
+            logging.debug("URL doesn't contain appointment/schedule: %s", driver.current_url)
+            return False
+        
+        start_time = datetime.now()
+        
+        # Quick check using short waits (1-2 seconds per selector group)
+        # This prevents the 70+ second waits we were seeing
+        form = self._find_element(self.APPOINTMENT_FORM_SELECTORS, wait_time=2)
         if form:
             logging.info("Appointment form detected at %s", driver.current_url)
             return True
         
-        # Alternative check: look for key elements that indicate we're on the right page
-        # Use explicit waits to handle slow JavaScript rendering
-        try:
-            WebDriverWait(driver, 15).until(
-                lambda d: (
-                    self._find_element(self.LOCATION_SELECTORS, wait_time=1)
-                    or self._find_element(self.CONSULATE_DATE_INPUT_SELECTORS, wait_time=1)
-                    or self._find_element(self.CONSULATE_BUSY_SELECTORS, wait_time=1)
-                )
-            )
-            logging.info("Appointment form elements detected at %s", driver.current_url)
-            return True
-        except TimeoutException:
-            pass
+        # Check if we've spent too long already
+        elapsed = (datetime.now() - start_time).total_seconds()
+        if elapsed > max_wait:
+            logging.debug("Exceeded max wait time (%.1fs) looking for form", elapsed)
+            return False
         
-        # Last resort: check for fieldset or legend elements typical of appointment forms
+        # Quick check for key elements that indicate we're on the right page
+        location = self._find_element(self.LOCATION_SELECTORS, wait_time=2)
+        if location:
+            logging.info("Location selector detected at %s", driver.current_url)
+            return True
+            
+        date_input = self._find_element(self.CONSULATE_DATE_INPUT_SELECTORS, wait_time=2)
+        if date_input:
+            logging.info("Date input detected at %s", driver.current_url)
+            return True
+            
+        busy_element = self._find_element(self.CONSULATE_BUSY_SELECTORS, wait_time=2)
+        if busy_element:
+            logging.info("Busy indicator detected at %s", driver.current_url)
+            return True
+        
+        # Last resort: check for fieldset typical of appointment forms
         try:
             fieldset = driver.find_element(By.CSS_SELECTOR, "fieldset.fieldset")
             if fieldset:
@@ -1378,7 +1403,8 @@ class VisaAppointmentChecker:
                 return True
         except NoSuchElementException:
             pass
-            
+        
+        logging.debug("No appointment form elements found at %s", driver.current_url)
         return False
 
     def _ensure_location_selected(self, element) -> None:
