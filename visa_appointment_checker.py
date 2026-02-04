@@ -656,12 +656,6 @@ class VisaAppointmentChecker:
         (By.CSS_SELECTOR, "select[name='appointments[consulate_appointment][time]']"),
     ]
 
-    ADDRESS_SELECTORS: List[Selector] = [
-        (By.ID, "appointments_consulate_address"),
-        (By.CSS_SELECTOR, "select[id*='consulate_address']"),
-        (By.CSS_SELECTOR, "select[name*='consulate_address']"),
-    ]
-
     DATEPICKER_CONTAINER_SELECTORS: List[Selector] = [
         (By.ID, "ui-datepicker-div"),
         (By.CSS_SELECTOR, "#ui-datepicker-div"),
@@ -685,10 +679,6 @@ class VisaAppointmentChecker:
         "Vancouver": "95",
     }
 
-    DATEPICKER_AVAILABLE_DAY_SELECTORS: List[Selector] = [
-        (By.CSS_SELECTOR, "#ui-datepicker-div td:not(.ui-state-disabled) a"),
-    ]
-
     def __init__(self, cfg: CheckerConfig, *, headless: bool = True) -> None:
         self.cfg = cfg
         self.headless = headless
@@ -706,22 +696,15 @@ class VisaAppointmentChecker:
         self._busy_streak_count = 0
         self._adaptive_frequency = cfg.check_frequency_minutes
         self._cached_elements = {}
-        self._session_cookies: Optional[dict] = None
         self._last_session_validation: Optional[datetime] = None
-        self._recent_results = []  # Track last 10 check results
-        self._metrics = {
-            'check_durations': [],
-            'navigation_times': [],
-            'success_rate': 0.0,
-            'avg_response_time': 0.0
-        }
+        self._recent_results: List[int] = []  # Track last 10 check results
+        self._metrics: Dict[str, List[float]] = {}  # Performance metrics per operation
         
         # Strategic optimization properties
         self._availability_history: List[Dict[str, Any]] = []
         self._pattern_file = Path("appointment_patterns.json")
         self._prime_time_windows: List[Tuple[int, int]] = []
         self._burst_mode_active = False
-        self._last_availability_event: Optional[datetime] = None
         
         # Initialize strategic components
         self._parse_prime_time_windows()
@@ -2374,7 +2357,7 @@ class VisaAppointmentChecker:
                 logging.debug("Backoff period expired, resuming normal schedule")
                 self._backoff_until = None
 
-        return sleep_seconds
+        return int(sleep_seconds)
 
     def _track_performance(self, operation: str, duration: float):
         """Track performance metrics for various operations"""

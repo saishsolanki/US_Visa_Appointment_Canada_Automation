@@ -13,7 +13,7 @@ def run_command(command, description):
     """Run a command and print status"""
     print(f"Installing {description}...")
     try:
-        result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+        subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
         print(f"✓ {description} installed successfully")
         return True
     except subprocess.CalledProcessError as e:
@@ -98,17 +98,12 @@ def main():
     print("1. Edit config.ini with your actual credentials and settings")
     print("2. For Gmail SMTP, create an app password at:")
     print("   https://myaccount.google.com/apppasswords")
-    print("3. Run the checker with: python visa_appointment_checker.py")
-    print("\n✓ Installation complete!")
-
-
-if __name__ == "__main__":
-    main()
     print("3. Run the web UI: python web_ui.py")
     print("4. Configure settings at http://127.0.0.1:5000")
     print("5. Run the checker: python visa_appointment_checker.py")
-    print("\nNote: Gmail SMTP is used as the default (free service)")
+    print("\\nNote: Gmail SMTP is used as the default (free service)")
     print("You can change to another email provider if preferred.")
+
 
 if __name__ == "__main__":
     main()
