@@ -921,8 +921,25 @@ class VisaAppointmentChecker:
         return None
 
     def _check_location_availability(self, location: str) -> bool:
-        """Quick availability check for specific location"""
+        """Quick availability check for specific location.
+        
+        IMPORTANT: This must only be called AFTER navigating to the appointment page.
+        Returns False if we're not on the right page.
+        """
         try:
+            driver = self.ensure_driver()
+            current_url = driver.current_url.lower()
+            
+            # Safety check: verify we're on the appointment page
+            if not any(token in current_url for token in ("appointment", "schedule")):
+                logging.debug("Not on appointment page, skipping location availability check")
+                return False
+            
+            # Also verify login is complete (not on sign_in page)
+            if "sign_in" in current_url:
+                logging.debug("Still on login page, skipping location availability check")
+                return False
+            
             # Switch to location
             location_select = self._find_element(self.LOCATION_SELECTORS, wait_time=5)
             if location_select:
@@ -932,6 +949,10 @@ class VisaAppointmentChecker:
                 self._ensure_location_selected(location_select)
                 self.cfg.location = original_location  # Restore original
                 time.sleep(1)
+            else:
+                # If no location selector, we can't switch locations
+                logging.debug("No location selector found for multi-location check")
+                return False
                 
             # Quick busy check
             return not self._is_calendar_busy()
@@ -1250,7 +1271,9 @@ class VisaAppointmentChecker:
             if not driver.current_url.startswith(appointment_url):
                 logging.info("Loading appointment page directly via stored URL: %s", appointment_url)
                 self._safe_get(appointment_url)
-                time.sleep(2)
+                # Wait longer for page to fully render - the AIS site can be slow
+                time.sleep(5)
+                self._wait_for_page_ready(driver)
                 self._dismiss_overlays()
             if self._ensure_on_appointment_form():
                 return
@@ -1301,22 +1324,46 @@ class VisaAppointmentChecker:
         self._capture_artifact("reschedule_navigation_failed")
 
     def _ensure_on_appointment_form(self) -> bool:
-        driver = self.ensure_driver()
+        """Check if we're on the appointment form page.
         
-        # First check using standard selectors
-        form = self._find_element(self.APPOINTMENT_FORM_SELECTORS, wait_time=5)
+        Uses multiple strategies with progressively longer waits to detect the form.
+        """
+        driver = self.ensure_driver()
+        current_url = driver.current_url.lower()
+        
+        # Quick URL check - if we're still on login, definitely not on form
+        if "sign_in" in current_url:
+            return False
+        
+        # First check using standard selectors with longer wait
+        form = self._find_element(self.APPOINTMENT_FORM_SELECTORS, wait_time=10)
         if form:
             logging.info("Appointment form detected at %s", driver.current_url)
             return True
         
         # Alternative check: look for key elements that indicate we're on the right page
-        # The HTML you provided shows the location selector and date picker
-        location_elem = self._find_element(self.LOCATION_SELECTORS, wait_time=3)
-        date_elem = self._find_element(self.CONSULATE_DATE_INPUT_SELECTORS, wait_time=3)
-        
-        if location_elem or date_elem:
+        # Use explicit waits to handle slow JavaScript rendering
+        try:
+            WebDriverWait(driver, 15).until(
+                lambda d: (
+                    self._find_element(self.LOCATION_SELECTORS, wait_time=1)
+                    or self._find_element(self.CONSULATE_DATE_INPUT_SELECTORS, wait_time=1)
+                    or self._find_element(self.CONSULATE_BUSY_SELECTORS, wait_time=1)
+                )
+            )
             logging.info("Appointment form elements detected at %s", driver.current_url)
             return True
+        except TimeoutException:
+            pass
+        
+        # Last resort: check for fieldset or legend elements typical of appointment forms
+        try:
+            fieldset = driver.find_element(By.CSS_SELECTOR, "fieldset.fieldset")
+            if fieldset:
+                logging.info("Appointment fieldset detected at %s", driver.current_url)
+                return True
+        except NoSuchElementException:
+            pass
             
         return False
 
@@ -1428,7 +1475,20 @@ class VisaAppointmentChecker:
             logging.debug("Error handling custom location dropdown: %s", exc)
 
     def _is_calendar_busy(self) -> bool:
-        """Check if calendar shows busy status"""
+        """Check if calendar shows busy status.
+        
+        Returns True if:
+        - Busy element is found and visible
+        - OR we're not on the appointment page (safe default)
+        """
+        driver = self.ensure_driver()
+        current_url = driver.current_url.lower()
+        
+        # Safety: if we're not on the appointment page, assume busy to prevent false positives
+        if "sign_in" in current_url or not any(token in current_url for token in ("appointment", "schedule")):
+            logging.debug("Not on appointment page, assuming calendar busy for safety")
+            return True
+            
         busy_element = self._is_selector_visible(self.CONSULATE_BUSY_SELECTORS)
         return busy_element is not None
 
