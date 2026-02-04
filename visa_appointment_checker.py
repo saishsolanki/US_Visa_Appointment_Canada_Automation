@@ -584,6 +584,9 @@ class VisaAppointmentChecker:
 
     PRIVACY_LABEL_SELECTORS: List[Selector] = [
         (By.CSS_SELECTOR, "label[for='policy_confirmed']"),
+        # iCheck styled checkbox wrapper - click the div.icheckbox
+        (By.CSS_SELECTOR, "div.icheckbox"),
+        (By.CSS_SELECTOR, ".icheck-item"),
         (
             By.XPATH,
             "//label[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'privacy policy')]",
@@ -1769,40 +1772,51 @@ class VisaAppointmentChecker:
                     logging.error("Page alert: %s", alert.text.strip())
 
     def _accept_privacy_policy(self) -> None:
-        """Ensure the privacy policy confirmation checkbox is checked before submitting."""
+        """Ensure the privacy policy confirmation checkbox is checked before submitting.
+        
+        The AIS website uses iCheck library which hides the actual checkbox input
+        and replaces it with a styled div. We need to click the label or wrapper div.
+        """
         driver = self.ensure_driver()
 
-        checkbox = self._find_element(self.PRIVACY_CHECKBOX_SELECTORS, wait_time=5)
-        if checkbox is None:
-            label = self._find_element(self.PRIVACY_LABEL_SELECTORS, wait_time=3)
-            if label is None:
-                logging.debug("Privacy policy checkbox not found; continuing without explicit confirmation.")
-                return
-
+        # First, try to find and click the label or iCheck wrapper (preferred method)
+        # The actual checkbox is hidden by iCheck, so clicking the label/wrapper is more reliable
+        label = self._find_element(self.PRIVACY_LABEL_SELECTORS, wait_time=5)
+        if label:
             self._scroll_into_view(label)
             try:
                 label.click()
-                logging.info("Accepted privacy policy via label click")
+                logging.info("Accepted privacy policy via label/wrapper click")
+                time.sleep(0.5)  # Give iCheck time to update the checkbox state
+                return
             except WebDriverException:
                 logging.debug("Label click failed; attempting scripted click")
-                driver.execute_script("arguments[0].click();", label)
-                logging.info("Accepted privacy policy via scripted label click")
-            return
+                try:
+                    driver.execute_script("arguments[0].click();", label)
+                    logging.info("Accepted privacy policy via scripted label click")
+                    time.sleep(0.5)
+                    return
+                except WebDriverException:
+                    logging.debug("Scripted label click also failed")
 
-        if checkbox.is_selected():
-            logging.debug("Privacy policy checkbox already selected")
-            return
+        # Fallback: try to find the hidden checkbox and use JavaScript to check it
+        checkbox = self._find_element_raw(self.PRIVACY_CHECKBOX_SELECTORS, wait_time=3)
+        if checkbox:
+            try:
+                # Check if already selected
+                if checkbox.is_selected():
+                    logging.debug("Privacy policy checkbox already selected")
+                    return
+                
+                # Use JavaScript to check the hidden checkbox directly
+                driver.execute_script("arguments[0].checked = true; arguments[0].click();", checkbox)
+                logging.info("Privacy policy checkbox selected via JavaScript")
+                time.sleep(0.5)
+                return
+            except WebDriverException as exc:
+                logging.debug("JavaScript checkbox selection failed: %s", exc)
 
-        self._scroll_into_view(checkbox)
-        try:
-            checkbox.click()
-            logging.info("Privacy policy checkbox selected")
-            return
-        except WebDriverException:
-            logging.debug("Direct checkbox click failed; attempting scripted click")
-
-        driver.execute_script("arguments[0].click();", checkbox)
-        logging.info("Privacy policy checkbox selected via scripted click")
+        logging.warning("Privacy policy checkbox/label not found; attempting to continue anyway")
 
     def _enter_text(self, element, value: str) -> None:
         try:
