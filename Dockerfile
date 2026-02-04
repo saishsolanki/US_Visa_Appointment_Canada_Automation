@@ -51,11 +51,14 @@ RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearm
     apt-get install -y google-chrome-stable && \
     rm -rf /var/lib/apt/lists/*
 
-# Create non-root user for security
-RUN useradd -m -u 1000 -s /bin/bash visabot
-
-# Create app directory
+# Create app directory first
 WORKDIR /app
+
+# Create non-root user for security (use different UID to avoid conflicts)
+RUN useradd -m -u 1001 -s /bin/bash visabot
+
+# Set ownership after creating directories
+RUN chown -R visabot:visabot /app
 
 # Copy requirements first (for Docker layer caching)
 COPY requirements.txt .
