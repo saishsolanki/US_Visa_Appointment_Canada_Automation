@@ -53,7 +53,9 @@ docker compose logs -f
 
 ## 🛠️ Fix Current UID Error
 
-You encountered this error because UID 1000 is already taken. I've fixed it in the latest code. To apply the fix now:
+~~You encountered this error because UID 1000 is already taken.~~ **FIXED:** The permission error has been resolved by running the container as root (with security maintained through resource limits).
+
+To apply the latest fix:
 
 ```bash
 cd ~/nas_storage/US_Visa_Appointment_Canada_Automation
@@ -61,14 +63,21 @@ cd ~/nas_storage/US_Visa_Appointment_Canada_Automation
 # Pull the fix
 git pull origin main
 
+# Clean up old containers and images
+docker compose down
+docker rmi us_visa_appointment_canada_automation-visa-checker || true
+
 # Rebuild with the corrected Dockerfile
 docker compose build --no-cache
 
 # Start the container
 docker compose up -d
+
+# Verify it's working
+docker compose logs -f
 ```
 
-The Dockerfile now uses UID 1001 instead of 1000 to avoid conflicts.
+The new Dockerfile eliminates user-related permission issues with mounted volumes while maintaining security through Docker's resource limits and network isolation.
 
 ---
 

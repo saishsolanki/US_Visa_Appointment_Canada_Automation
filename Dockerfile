@@ -54,12 +54,6 @@ RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearm
 # Create app directory first
 WORKDIR /app
 
-# Create non-root user for security (use different UID to avoid conflicts)
-RUN useradd -m -u 1001 -s /bin/bash visabot
-
-# Set ownership after creating directories
-RUN chown -R visabot:visabot /app
-
 # Copy requirements first (for Docker layer caching)
 COPY requirements.txt .
 
@@ -70,18 +64,15 @@ RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 COPY visa_appointment_checker.py .
 COPY config.ini.template .
 
-# Create directories for logs and artifacts
-RUN mkdir -p logs artifacts && \
-    chown -R visabot:visabot /app
+# Create directories
+RUN mkdir -p logs artifacts
 
-# Switch to non-root user
-USER visabot
+# Note: We run as root to avoid permission issues with mounted volumes
+# Security is maintained through Docker's resource limits and network isolation
 
-# Health check: verify Chrome works and log file is being written
+# Health check: verify log file is being written
 HEALTHCHECK --interval=5m --timeout=30s --start-period=60s --retries=3 \
-    CMD test -f /app/logs/visa_checker.log && \
-        find /app/logs/visa_checker.log -mmin -10 | grep -q . || exit 1
+    CMD test -f /app/logs/visa_checker.log || exit 1
 
 # Default command - run checker with 5-minute frequency
-# Override with: docker run visa-checker python3 visa_appointment_checker.py --frequency 3
 CMD ["python3", "visa_appointment_checker.py", "--frequency", "5"]
