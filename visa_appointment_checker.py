@@ -607,6 +607,11 @@ class VisaAppointmentChecker:
     APPOINTMENT_FORM_SELECTORS: List[Selector] = [
         (By.ID, "appointment-form"),
         (By.CSS_SELECTOR, "form#appointment-form"),
+        (By.CSS_SELECTOR, "form[action*='appointment']"),
+        (By.CSS_SELECTOR, "fieldset.fieldset legend"),
+        (By.XPATH, "//legend[contains(text(), 'Consular Section Appointment')]"),
+        (By.CSS_SELECTOR, "#consulate-appointment-fields"),
+        (By.ID, "appointments_consulate_appointment_facility_id"),
     ]
 
     LOCATION_SELECTORS: List[Selector] = [
@@ -1013,22 +1018,6 @@ class VisaAppointmentChecker:
     def perform_check(self) -> None:
         start_time = datetime.now()
         
-        # Strategic optimization: Check if we should use burst mode
-        if self._should_use_burst_mode():
-            if self._perform_burst_checks():
-                # Found availability in burst mode, continue with normal check
-                pass
-        
-        # Strategic optimization: Multi-location check if enabled
-        if self.cfg.multi_location_check:
-            available_location = self._check_all_locations()
-            if available_location and available_location != self.cfg.location:
-                send_notification(
-                    self.cfg,
-                    f"🌟 Appointment Available at {available_location}!",
-                    f"Found availability at alternative location: {available_location}"
-                )
-        
         driver = self.ensure_driver()
         
         try:
@@ -1051,6 +1040,7 @@ class VisaAppointmentChecker:
                     logging.info("Session already authenticated; skipping login form.")
                 self._navigate_to_schedule(driver)
 
+            # Now check availability after we're properly navigated
             self._check_consulate_availability()
             logging.info("Appointment check completed - reached scheduling section.")
 
@@ -1158,19 +1148,28 @@ class VisaAppointmentChecker:
         else:
             raise RuntimeError("Failed to reach scheduling page")
 
+        # Wait for page to fully load after navigation
+        time.sleep(2)
+        self._wait_for_page_ready(driver)
+        
         # Cache form elements when we reach the appointment page for future use
         self._cache_form_elements()
         
-        location_select = self._find_element(self.LOCATION_SELECTORS, wait_time=20, use_cache=True)
+        # Try to find location selector with longer wait
+        location_select = self._find_element(self.LOCATION_SELECTORS, wait_time=30, use_cache=True)
         if location_select:
             self._ensure_location_selected(location_select)
+            logging.info("Location selector found and configured")
         else:
-            logging.info(
-                "Location selector not found; page layout may have changed or location already locked."
-            )
-            self._capture_artifact("missing_location_selector")
-
-        self._check_consulate_availability()
+            # Try alternative: check if we're on the right page by looking for the date input
+            date_input = self._find_element(self.CONSULATE_DATE_INPUT_SELECTORS, wait_time=10)
+            if date_input:
+                logging.info("Date picker found, location may be pre-selected or single location")
+            else:
+                logging.warning(
+                    "Location selector not found; page layout may have changed or location already locked."
+                )
+                self._capture_artifact("missing_location_selector")
 
     def _handle_group_continue(self) -> None:
         driver = self.ensure_driver()
@@ -1215,9 +1214,19 @@ class VisaAppointmentChecker:
     def _open_reschedule_flow(self) -> None:
         driver = self.ensure_driver()
         current = driver.current_url.lower()
-        if "/appointment" in current and "reschedule" not in current:
-            # Already on appointment page or similar.
+        
+        # Check if we're already on the appointment form by looking for key elements
+        if self._ensure_on_appointment_form():
+            logging.info("Already on appointment form")
             return
+
+        # If URL contains /appointment, we're likely on the right page but need to wait for it to load
+        if "/appointment" in current:
+            logging.info("On appointment URL, waiting for form elements to load...")
+            time.sleep(2)
+            self._wait_for_page_ready(driver)
+            if self._ensure_on_appointment_form():
+                return
 
         if "continue_actions" in current:
             logging.info("On continue actions page; expanding reschedule section")
@@ -1230,18 +1239,18 @@ class VisaAppointmentChecker:
                 except (WebDriverException, ElementClickInterceptedException):
                     logging.debug("Accordion toggle click failed; attempting scripted click")
                     driver.execute_script("arguments[0].click();", toggler)
-                time.sleep(0.5)
+                time.sleep(1)
+                if self._ensure_on_appointment_form():
+                    return
             else:
                 logging.debug("Reschedule accordion toggle not found; attempting to locate button directly")
-
-        if self._ensure_on_appointment_form():
-            return
 
         if self._appointment_base_url:
             appointment_url = urljoin(self._appointment_base_url, "appointment")
             if not driver.current_url.startswith(appointment_url):
                 logging.info("Loading appointment page directly via stored URL: %s", appointment_url)
                 self._safe_get(appointment_url)
+                time.sleep(2)
                 self._dismiss_overlays()
             if self._ensure_on_appointment_form():
                 return
@@ -1257,6 +1266,7 @@ class VisaAppointmentChecker:
             if href:
                 logging.info("Navigating directly to reschedule link: %s", href)
                 self._safe_get(href)
+                time.sleep(2)
                 self._dismiss_overlays()
                 if self._ensure_on_appointment_form():
                     return
@@ -1271,10 +1281,18 @@ class VisaAppointmentChecker:
                         driver.execute_script("arguments[0].click();", reschedule_button)
                     except (WebDriverException, StaleElementReferenceException):
                         logging.debug("Scripted click on reschedule button also failed")
+                time.sleep(2)
                 self._wait_for_page_ready(driver)
                 self._dismiss_overlays()
                 if self._ensure_on_appointment_form():
                     return
+
+        # Final attempt: Check if form elements exist even if form itself wasn't detected
+        location_or_date = self._find_element(self.LOCATION_SELECTORS, wait_time=5) or \
+                          self._find_element(self.CONSULATE_DATE_INPUT_SELECTORS, wait_time=5)
+        if location_or_date:
+            logging.info("Found form elements directly, proceeding with check")
+            return
 
         logging.warning(
             "Unable to open reschedule appointment workflow automatically; remaining on %s",
@@ -1284,12 +1302,23 @@ class VisaAppointmentChecker:
 
     def _ensure_on_appointment_form(self) -> bool:
         driver = self.ensure_driver()
-        form = self._find_element(self.APPOINTMENT_FORM_SELECTORS, wait_time=12)
-        if not form:
-            return False
-
-        logging.info("Appointment form detected at %s", driver.current_url)
-        return True
+        
+        # First check using standard selectors
+        form = self._find_element(self.APPOINTMENT_FORM_SELECTORS, wait_time=5)
+        if form:
+            logging.info("Appointment form detected at %s", driver.current_url)
+            return True
+        
+        # Alternative check: look for key elements that indicate we're on the right page
+        # The HTML you provided shows the location selector and date picker
+        location_elem = self._find_element(self.LOCATION_SELECTORS, wait_time=3)
+        date_elem = self._find_element(self.CONSULATE_DATE_INPUT_SELECTORS, wait_time=3)
+        
+        if location_elem or date_elem:
+            logging.info("Appointment form elements detected at %s", driver.current_url)
+            return True
+            
+        return False
 
     def _ensure_location_selected(self, element) -> None:
         # Check if it's a standard <select> element or a custom dropdown
