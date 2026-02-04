@@ -67,6 +67,19 @@ logging.basicConfig(
     ],
 )
 
+# Suppress verbose third-party library logging to avoid log spam
+# These libraries are extremely chatty at DEBUG level
+for noisy_logger in [
+    "selenium",
+    "selenium.webdriver.remote.remote_connection",
+    "urllib3",
+    "urllib3.connectionpool",
+    "requests",
+    "PIL",
+    "chardet",
+]:
+    logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+
 if DEBUG_MODE:
     logging.info("🔍 DEBUG MODE ENABLED - Verbose logging active")
 
