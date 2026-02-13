@@ -94,8 +94,8 @@ if __name__ == '__main__':
     
     port = 5000
     try:
-        app.run(debug=True, port=port, host='127.0.0.1')
+        app.run(debug=False, port=port, host='127.0.0.1')
     except OSError:
         port = find_free_port()
         print(f"Port 5000 is in use, trying port {port}")
-        app.run(debug=True, port=port, host='127.0.0.1')
+        app.run(debug=False, port=port, host='127.0.0.1')

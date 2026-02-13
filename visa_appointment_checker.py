@@ -45,21 +45,12 @@ RESCHEDULE_URLS = [
 # Keep webdriver-manager quiet unless user overrides
 os.environ.setdefault("WDM_LOG_LEVEL", "0")
 
-# Enable debug mode via environment variable
-DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
-
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
 LOG_PATH = LOG_DIR / "visa_checker.log"
 
-ARTIFACTS_DIR = Path("artifacts")
-ARTIFACTS_DIR.mkdir(exist_ok=True)
-
-# Set log level based on debug mode
-log_level = logging.DEBUG if DEBUG_MODE else logging.INFO
-
 logging.basicConfig(
-    level=log_level,
+    level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
         RotatingFileHandler(LOG_PATH, maxBytes=5 * 1024 * 1024, backupCount=5),
@@ -68,7 +59,6 @@ logging.basicConfig(
 )
 
 # Suppress verbose third-party library logging to avoid log spam
-# These libraries are extremely chatty at DEBUG level
 for noisy_logger in [
     "selenium",
     "selenium.webdriver.remote.remote_connection",
@@ -79,9 +69,6 @@ for noisy_logger in [
     "chardet",
 ]:
     logging.getLogger(noisy_logger).setLevel(logging.WARNING)
-
-if DEBUG_MODE:
-    logging.info("🔍 DEBUG MODE ENABLED - Verbose logging active")
 
 logging.info("Visa checker logs will rotate under %s", LOG_PATH.resolve())
 
@@ -414,7 +401,6 @@ class ProgressReporter:
     def _send_progress_report(self) -> None:
         """Send email with progress summary and log attachment."""
         if not self.cfg.is_smtp_configured():
-            logging.debug("SMTP not configured; skipping progress report")
             return
         
         stats = self._get_stats()
@@ -758,7 +744,7 @@ class VisaAppointmentChecker:
                 },
             )
         except Exception:  # noqa: BLE001
-            logging.debug("Unable to tweak navigator.webdriver; continuing anyway.")
+            pass
 
         try:
             browser_version = driver.capabilities.get("browserVersion")
@@ -769,7 +755,7 @@ class VisaAppointmentChecker:
                 driver_version.split(" ", 1)[0] if driver_version else "unknown",
             )
         except Exception:  # noqa: BLE001
-            logging.debug("Unable to read driver capabilities for version logging")
+            pass
 
         self.driver = driver
         logging.info("Chrome driver initialized (headless=%s)", self.headless)
@@ -787,7 +773,7 @@ class VisaAppointmentChecker:
         try:
             self.driver.quit()
         except Exception:  # noqa: BLE001
-            logging.debug("Driver quit raised; ignoring to continue cleanup.")
+            pass
         finally:
             self.driver = None
             self._appointment_base_url = None
@@ -924,7 +910,7 @@ class VisaAppointmentChecker:
                     logging.info("🎉 Found availability at %s!", location)
                     return location
             except Exception as exc:
-                logging.debug("Failed to check %s: %s", location, exc)
+                pass
                 
         return None
 
@@ -940,12 +926,10 @@ class VisaAppointmentChecker:
             
             # Safety check: verify we're on the appointment page
             if not any(token in current_url for token in ("appointment", "schedule")):
-                logging.debug("Not on appointment page, skipping location availability check")
                 return False
             
             # Also verify login is complete (not on sign_in page)
             if "sign_in" in current_url:
-                logging.debug("Still on login page, skipping location availability check")
                 return False
             
             # Switch to location
@@ -959,7 +943,6 @@ class VisaAppointmentChecker:
                 time.sleep(1)
             else:
                 # If no location selector, we can't switch locations
-                logging.debug("No location selector found for multi-location check")
                 return False
                 
             # Quick busy check
@@ -975,7 +958,6 @@ class VisaAppointmentChecker:
                     self._availability_history = json.load(f)
                 logging.info("Loaded %d historical availability events", len(self._availability_history))
             except Exception as exc:
-                logging.debug("Failed to load patterns: %s", exc)
                 self._availability_history = []
 
     def _save_patterns(self) -> None:
@@ -984,7 +966,7 @@ class VisaAppointmentChecker:
             with open(self._pattern_file, 'w') as f:
                 json.dump(self._availability_history[-100:], f, indent=2)  # Keep last 100 events
         except Exception as exc:
-            logging.debug("Failed to save patterns: %s", exc)
+            pass
 
     def _record_availability_event(self, event_type: str) -> None:
         """Record when calendar becomes available or busy"""
@@ -1052,7 +1034,6 @@ class VisaAppointmentChecker:
         try:
             # Smart navigation based on current page state
             page_state = self._get_page_state()
-            logging.debug("Current page state: %s", page_state)
             
             if page_state == "appointment_form":
                 # Already on appointment page, skip navigation
@@ -1179,7 +1160,6 @@ class VisaAppointmentChecker:
         
         if not schedule_found:
             logging.error("Failed to reach scheduling page. Current URL: %s", driver.current_url)
-            self._capture_debug_state("scheduling_navigation_failed")
             raise RuntimeError("Failed to reach scheduling page")
 
         # Wait for page to fully load after navigation
@@ -1203,8 +1183,6 @@ class VisaAppointmentChecker:
                 logging.warning(
                     "Location selector not found; page layout may have changed or location already locked."
                 )
-                # Capture comprehensive debug info when location selector is missing
-                self._capture_debug_state("missing_location_selector")
 
     def _handle_group_continue(self) -> None:
         driver = self.ensure_driver()
@@ -1218,17 +1196,16 @@ class VisaAppointmentChecker:
         try:
             continue_href = button.get_attribute("href") or ""
         except (WebDriverException, StaleElementReferenceException):
-            logging.debug("Could not retrieve href from button; continuing without base URL capture")
+            pass
 
         self._scroll_into_view(button)
         try:
             button.click()
         except (WebDriverException, ElementClickInterceptedException, ElementNotInteractableException):
-            logging.debug("Direct continue click failed; attempting scripted click")
             try:
                 driver.execute_script("arguments[0].click();", button)
             except (WebDriverException, StaleElementReferenceException):
-                logging.debug("Scripted click also failed; page may have already navigated")
+                pass
 
         logging.info("Clicked group continue button")
 
@@ -1241,7 +1218,6 @@ class VisaAppointmentChecker:
                 base = f"{base}/"
             if base:
                 self._appointment_base_url = base
-                logging.debug("Captured appointment base URL: %s", self._appointment_base_url)
 
         self._wait_for_page_ready(driver)
         self._dismiss_overlays()
@@ -1272,13 +1248,10 @@ class VisaAppointmentChecker:
                 try:
                     toggler.click()
                 except (WebDriverException, ElementClickInterceptedException):
-                    logging.debug("Accordion toggle click failed; attempting scripted click")
                     driver.execute_script("arguments[0].click();", toggler)
                 time.sleep(1)
                 if self._ensure_on_appointment_form():
                     return
-            else:
-                logging.debug("Reschedule accordion toggle not found; attempting to locate button directly")
 
         if self._appointment_base_url:
             appointment_url = urljoin(self._appointment_base_url, "appointment")
@@ -1298,7 +1271,7 @@ class VisaAppointmentChecker:
             try:
                 href = reschedule_button.get_attribute("href") or ""
             except (WebDriverException, StaleElementReferenceException):
-                logging.debug("Could not retrieve href from reschedule button")
+                pass
             
             if href:
                 logging.info("Navigating directly to reschedule link: %s", href)
@@ -1308,16 +1281,14 @@ class VisaAppointmentChecker:
                 if self._ensure_on_appointment_form():
                     return
             else:
-                logging.debug("Reschedule anchor missing href attribute; attempting click")
                 try:
                     self._scroll_into_view(reschedule_button)
                     reschedule_button.click()
                 except (ElementClickInterceptedException, ElementNotInteractableException, WebDriverException, StaleElementReferenceException):
-                    logging.debug("Reschedule button click failed; attempting scripted click")
                     try:
                         driver.execute_script("arguments[0].click();", reschedule_button)
                     except (WebDriverException, StaleElementReferenceException):
-                        logging.debug("Scripted click on reschedule button also failed")
+                        pass
                 time.sleep(2)
                 self._wait_for_page_ready(driver)
                 self._dismiss_overlays()
@@ -1335,8 +1306,6 @@ class VisaAppointmentChecker:
             "Unable to open reschedule appointment workflow automatically; remaining on %s",
             driver.current_url,
         )
-        # Capture comprehensive debug information when reschedule fails
-        self._capture_debug_state("reschedule_navigation_failed")
 
     def _ensure_on_appointment_form(self, max_wait: int = 15) -> bool:
         """Check if we're on the appointment form page.
@@ -1352,12 +1321,10 @@ class VisaAppointmentChecker:
         
         # Quick URL check - if we're still on login, definitely not on form
         if "sign_in" in current_url:
-            logging.debug("Still on sign_in page, not on appointment form")
             return False
         
         # URL must contain appointment or schedule keywords
         if not any(token in current_url for token in ("appointment", "schedule")):
-            logging.debug("URL doesn't contain appointment/schedule: %s", driver.current_url)
             return False
         
         start_time = datetime.now()
@@ -1372,7 +1339,6 @@ class VisaAppointmentChecker:
         # Check if we've spent too long already
         elapsed = (datetime.now() - start_time).total_seconds()
         if elapsed > max_wait:
-            logging.debug("Exceeded max wait time (%.1fs) looking for form", elapsed)
             return False
         
         # Quick check for key elements that indicate we're on the right page
@@ -1400,7 +1366,6 @@ class VisaAppointmentChecker:
         except NoSuchElementException:
             pass
         
-        logging.debug("No appointment form elements found at %s", driver.current_url)
         return False
 
     def _ensure_location_selected(self, element) -> None:
@@ -1460,7 +1425,7 @@ class VisaAppointmentChecker:
                 selected_text,
             )
         except Exception as exc:
-            logging.debug("Error handling standard location select: %s", exc)
+            pass
 
     def _handle_custom_location_dropdown(self, element) -> None:
         """Handle custom dropdown elements (div, etc.) for location selection"""
@@ -1505,10 +1470,10 @@ class VisaAppointmentChecker:
                 logging.info("Location dropdown detected but target location not found in options")
                 
             except Exception as exc:
-                logging.debug("Could not interact with custom dropdown: %s", exc)
+                pass
                 
         except Exception as exc:
-            logging.debug("Error handling custom location dropdown: %s", exc)
+            pass
 
     def _is_calendar_busy(self) -> bool:
         """Check if calendar shows busy status.
@@ -1522,7 +1487,6 @@ class VisaAppointmentChecker:
         
         # Safety: if we're not on the appointment page, assume busy to prevent false positives
         if "sign_in" in current_url or not any(token in current_url for token in ("appointment", "schedule")):
-            logging.debug("Not on appointment page, assuming calendar busy for safety")
             return True
             
         busy_element = self._is_selector_visible(self.CONSULATE_BUSY_SELECTORS)
@@ -1532,7 +1496,6 @@ class VisaAppointmentChecker:
         driver = self.ensure_driver()
         check_start = datetime.now()
         
-        logging.debug("Starting consulate availability check at %s", driver.current_url)
 
         try:
             WebDriverWait(driver, 20).until(
@@ -1543,8 +1506,6 @@ class VisaAppointmentChecker:
             )
         except TimeoutException:
             logging.warning("Consular appointment widgets did not load within the expected time window")
-            # Capture comprehensive debug info when widgets don't load
-            self._capture_debug_state("widgets_not_loaded")
             return
 
         # Intelligent calendar polling with adaptive frequency
@@ -1581,10 +1542,8 @@ class VisaAppointmentChecker:
                                    self._adaptive_frequency)
                 
                 self._schedule_backoff()
-                self._capture_artifact("consulate_busy")
                 return
             else:
-                logging.debug("Busy element exists but is hidden, proceeding with calendar check")
                 # Reset busy streak as it's not actually busy
                 self._busy_streak_count = 0
         else:
@@ -1623,14 +1582,13 @@ class VisaAppointmentChecker:
             time.sleep(0.3)
             calendar_opened = self._is_selector_visible(self.DATEPICKER_CONTAINER_SELECTORS) is not None
         except (WebDriverException, ElementNotInteractableException):
-            logging.debug("Direct click on date input failed, trying alternatives")
+            pass
 
         # If direct click didn't work, try clicking the calendar icon
         if not calendar_opened:
             try:
                 calendar_icon = self._find_element(self.CALENDAR_ICON_SELECTORS, wait_time=2)
                 if calendar_icon:
-                    logging.debug("Attempting to open calendar via calendar icon")
                     calendar_icon.click()
                     time.sleep(0.3)
                     calendar_opened = self._is_selector_visible(self.DATEPICKER_CONTAINER_SELECTORS) is not None
@@ -1640,7 +1598,6 @@ class VisaAppointmentChecker:
         # Last resort: JavaScript click
         if not calendar_opened:
             try:
-                logging.debug("Using JavaScript to trigger calendar")
                 driver.execute_script("arguments[0].focus(); arguments[0].click();", date_input)
                 time.sleep(0.3)
             except Exception as exc:
@@ -1702,7 +1659,6 @@ class VisaAppointmentChecker:
             try:
                 next_buttons[0].click()
             except WebDriverException:
-                logging.debug("Failed to advance to next month in calendar")
                 break
 
             time.sleep(0.5)
@@ -1766,17 +1722,12 @@ class VisaAppointmentChecker:
             )
             send_notification(self.cfg, subject, message)
             
-            # If auto-book is enabled, we would implement booking here
-            # TODO: Implement auto-booking functionality
             if self.cfg.auto_book:
                 logging.warning("Auto-book is enabled but not yet implemented. Please book manually.")
                 
         elif dates_in_range:
             logging.info("Found %d dates in target range, but none earlier than current appointment (%s)", 
                         len(dates_in_range), self.cfg.current_appointment_date)
-        else:
-            logging.debug("No available dates fall within target range %s to %s", 
-                         self.cfg.start_date, self.cfg.end_date)
 
     def _parse_calendar_date(self, slot: str) -> Optional[datetime]:
         """Parse calendar date string like 'January 2025 15' into datetime."""
@@ -1802,7 +1753,6 @@ class VisaAppointmentChecker:
             except ValueError:
                 continue
         
-        logging.debug("Could not parse date from calendar slot: %s", slot)
         return None
 
     def _is_selector_visible(self, selectors: List[Selector]):
@@ -1839,7 +1789,6 @@ class VisaAppointmentChecker:
                     time.sleep(0.5)
                     return
                 except (WebDriverException, StaleElementReferenceException):
-                    logging.debug("Failed to dismiss overlay with %s=%s", by, value)
                     continue
 
     def _await_login_transition(self, driver: webdriver.Chrome) -> None:
@@ -1908,14 +1857,13 @@ class VisaAppointmentChecker:
                 time.sleep(0.5)  # Give iCheck time to update the checkbox state
                 return
             except WebDriverException:
-                logging.debug("Label click failed; attempting scripted click")
                 try:
                     driver.execute_script("arguments[0].click();", label)
                     logging.info("Accepted privacy policy via scripted label click")
                     time.sleep(0.5)
                     return
                 except WebDriverException:
-                    logging.debug("Scripted label click also failed")
+                    pass
 
         # Fallback: try to find the hidden checkbox and use JavaScript to check it
         checkbox = self._find_element_raw(self.PRIVACY_CHECKBOX_SELECTORS, wait_time=3)
@@ -1923,7 +1871,6 @@ class VisaAppointmentChecker:
             try:
                 # Check if already selected
                 if checkbox.is_selected():
-                    logging.debug("Privacy policy checkbox already selected")
                     return
                 
                 # Use JavaScript to check the hidden checkbox directly
@@ -1932,7 +1879,7 @@ class VisaAppointmentChecker:
                 time.sleep(0.5)
                 return
             except WebDriverException as exc:
-                logging.debug("JavaScript checkbox selection failed: %s", exc)
+                pass
 
         logging.warning("Privacy policy checkbox/label not found; attempting to continue anyway")
 
@@ -1951,7 +1898,7 @@ class VisaAppointmentChecker:
                 element,
             )
         except WebDriverException:
-            logging.debug("Unable to scroll element into view; continuing anyway.")
+            pass
 
     def _find_or_raise(
         self,
@@ -1979,7 +1926,6 @@ class VisaAppointmentChecker:
             location_element = self._find_element_raw(self.LOCATION_SELECTORS, wait_time=5)
             if location_element:
                 self._cached_elements['location_select'] = location_element
-                logging.debug("Cached location selector element")
 
     def _find_element_raw(
         self,
@@ -2070,8 +2016,6 @@ class VisaAppointmentChecker:
                 )
                 time.sleep(sleep_seconds)
 
-        if not isinstance(last_exc, CaptchaDetectedError):
-            self._capture_artifact("navigation_failure")
         if last_exc:
             raise last_exc
 
@@ -2129,7 +2073,6 @@ class VisaAppointmentChecker:
 
         if captcha_iframes or captcha_widgets or page_mentions_challenge:
             logging.warning("Captcha challenge detected on page; automation paused.")
-            self._capture_artifact("captcha_detected")
             self._schedule_backoff()
             message = (
                 "Captcha detected - manual solve required"
@@ -2148,7 +2091,6 @@ class VisaAppointmentChecker:
         prime_time_multiplier = 1.0
         if self._is_prime_time():
             prime_time_multiplier = self.cfg.prime_time_backoff_multiplier
-            logging.debug("Applying prime time backoff reduction: %.1fx", prime_time_multiplier)
         
         # Factor in busy streak for more intelligent backoff
         busy_multiplier = 1.0 + (self._busy_streak_count * 0.2)  # Increase by 20% per busy streak
@@ -2191,111 +2133,6 @@ class VisaAppointmentChecker:
         logging.info("Backoff scheduled for %s minutes due to busy calendar response (adjusted for %s)", 
                     delay_minutes, reason)
 
-    def _capture_artifact(self, label: str) -> None:
-        driver = self.driver
-        if driver is None:
-            return
-
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        safe_label = label.replace(" ", "_")
-        base = ARTIFACTS_DIR / f"{timestamp}_{safe_label}"
-
-        try:
-            base.with_suffix(".html").write_text(driver.page_source, encoding="utf-8")
-            logging.info("📄 Saved HTML artifact: %s", base.with_suffix(".html"))
-        except Exception as exc:  # noqa: BLE001
-            logging.debug("Failed to persist page source artifact: %s", exc)
-
-        try:
-            driver.save_screenshot(str(base.with_suffix(".png")))
-            logging.info("📸 Saved screenshot: %s", base.with_suffix(".png"))
-        except Exception as exc:  # noqa: BLE001
-            logging.debug("Failed to capture screenshot artifact: %s", exc)
-
-    def _capture_debug_state(self, label: str) -> None:
-        """Capture comprehensive debug information about current page state.
-        
-        This captures:
-        - Current URL
-        - Page title
-        - Key element visibility
-        - Screenshot and HTML
-        - Console logs (if available)
-        """
-        driver = self.driver
-        if driver is None:
-            logging.debug("Cannot capture debug state: driver is None")
-            return
-
-        logging.info("=" * 60)
-        logging.info("🔍 DEBUG STATE CAPTURE: %s", label)
-        logging.info("=" * 60)
-        
-        # Basic page info
-        try:
-            logging.info("📍 Current URL: %s", driver.current_url)
-            logging.info("📄 Page Title: %s", driver.title)
-        except Exception as exc:
-            logging.warning("Failed to get basic page info: %s", exc)
-
-        # Check for key elements
-        element_checks = [
-            ("Location Selector", self.LOCATION_SELECTORS),
-            ("Date Input", self.CONSULATE_DATE_INPUT_SELECTORS),
-            ("Busy Message", self.CONSULATE_BUSY_SELECTORS),
-            ("Appointment Form", self.APPOINTMENT_FORM_SELECTORS),
-            ("Reschedule Button", self.RESCHEDULE_BUTTON_SELECTORS),
-            ("Sign In Button", self.SIGN_IN_SELECTORS),
-        ]
-        
-        logging.info("🔎 Element Visibility Check:")
-        for name, selectors in element_checks:
-            found = self._find_element(selectors, wait_time=2)
-            status = "✅ FOUND" if found else "❌ NOT FOUND"
-            if found:
-                try:
-                    tag = found.tag_name
-                    visible = found.is_displayed()
-                    enabled = found.is_enabled()
-                    logging.info("   %s: %s (tag=%s, visible=%s, enabled=%s)", 
-                               name, status, tag, visible, enabled)
-                except Exception:
-                    logging.info("   %s: %s (could not get details)", name, status)
-            else:
-                logging.info("   %s: %s", name, status)
-
-        # Check for common page indicators
-        try:
-            page_source = driver.page_source.lower()
-            indicators = [
-                ("Login Form", "user[email]" in page_source or "sign_in" in page_source),
-                ("Appointment Form", "consulate_appointment" in page_source),
-                ("Calendar Busy", "not_available" in page_source or "no appointments" in page_source.lower()),
-                ("CAPTCHA", "captcha" in page_source or "recaptcha" in page_source),
-                ("Error Message", "error" in page_source and "alert" in page_source),
-            ]
-            logging.info("🔎 Page Content Indicators:")
-            for name, present in indicators:
-                status = "✅ PRESENT" if present else "❌ NOT PRESENT"
-                logging.info("   %s: %s", name, status)
-        except Exception as exc:
-            logging.warning("Failed to check page content indicators: %s", exc)
-
-        # Try to get console logs
-        try:
-            logs = driver.get_log('browser')
-            if logs:
-                logging.info("🖥️ Browser Console Logs (last 5):")
-                for log in logs[-5:]:
-                    logging.info("   [%s] %s", log.get('level', 'UNKNOWN'), log.get('message', '')[:200])
-        except Exception:
-            pass  # Not all browsers support this
-
-        # Capture artifacts
-        self._capture_artifact(f"debug_{label}")
-        
-        logging.info("=" * 60)
-
     def _update_heartbeat(self, status: str) -> None:
         if not self._heartbeat_path:
             return
@@ -2308,7 +2145,7 @@ class VisaAppointmentChecker:
         try:
             self._heartbeat_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         except Exception as exc:  # noqa: BLE001
-            logging.debug("Failed to write heartbeat file: %s", exc)
+            pass
 
     def _calculate_dynamic_backoff(self) -> int:
         """Calculate backoff based on error patterns and success rate"""
@@ -2330,8 +2167,6 @@ class VisaAppointmentChecker:
             multiplier = 1  # Normal backoff for good success
         
         dynamic_minutes = base_minutes * multiplier
-        logging.debug("Dynamic backoff: base=%.1fm, success_rate=%.2f, multiplier=%.1f, result=%.1fm", 
-                     base_minutes, success_rate, multiplier, dynamic_minutes)
         
         return int(dynamic_minutes)
 
@@ -2342,8 +2177,6 @@ class VisaAppointmentChecker:
         # Use the more conservative of base_minutes and optimal calculation
         if optimal_minutes < base_minutes:
             adjusted_minutes = optimal_minutes
-            logging.debug("Using optimized frequency: %.1f minutes (prime time: %s)", 
-                        optimal_minutes, self._is_prime_time())
         else:
             adjusted_minutes = self._calculate_dynamic_backoff()
         
@@ -2365,9 +2198,7 @@ class VisaAppointmentChecker:
             if now < self._backoff_until:
                 backoff_seconds = int((self._backoff_until - now).total_seconds())
                 sleep_seconds = max(sleep_seconds, backoff_seconds)
-                logging.debug("Applying scheduled backoff: %s seconds remaining", backoff_seconds)
             else:
-                logging.debug("Backoff period expired, resuming normal schedule")
                 self._backoff_until = None
 
         return int(sleep_seconds)
@@ -2409,9 +2240,8 @@ class VisaAppointmentChecker:
                             png_path.unlink()
                     except Exception:
                         pass
-                logging.debug("Cleaned up %d old artifact files", len(old_files))
         except Exception as exc:
-            logging.debug("Artifact cleanup failed: %s", exc)
+            pass
 
     def post_check(self, *, success: bool) -> None:
         self._checks_since_restart += 1
@@ -2443,7 +2273,6 @@ class VisaAppointmentChecker:
         signature = f"{type(exc).__name__}:{str(exc)}"
         now = datetime.now(timezone.utc)
 
-        self._capture_artifact(f"error_{type(exc).__name__.lower()}")
 
         # If this is a rate limiting or login issue, schedule a longer backoff
         error_message = str(exc).lower()
