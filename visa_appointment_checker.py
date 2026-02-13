@@ -3,7 +3,6 @@ import configparser
 import json
 import logging
 import os
-import random
 import smtplib
 import threading
 import time
@@ -13,14 +12,11 @@ from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from getpass import getpass
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
 from urllib.parse import urljoin
 
 from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
@@ -35,6 +31,12 @@ from selenium.common.exceptions import (
 )
 
 from webdriver_manager.chrome import ChromeDriverManager
+from browser_session import build_chrome_options
+from config_wizard import run_cli_setup_wizard as run_cli_setup_wizard_external
+from logging_utils import LOG_PATH, ARTIFACTS_DIR, configure_logging
+from notification_utils import send_notification as send_notification_external
+from scheduling_utils import compute_sleep_seconds as compute_sleep_seconds_external
+from selector_registry import apply_selector_overrides
 
 LOGIN_URL = "https://ais.usvisa-info.com/en-ca/niv/users/sign_in"
 RESCHEDULE_URLS = [
@@ -46,44 +48,10 @@ RESCHEDULE_URLS = [
 # Keep webdriver-manager quiet unless user overrides
 os.environ.setdefault("WDM_LOG_LEVEL", "0")
 
-# Enable debug mode via environment variable
-DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
-
-LOG_DIR = Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
-LOG_PATH = LOG_DIR / "visa_checker.log"
-
-ARTIFACTS_DIR = Path("artifacts")
-ARTIFACTS_DIR.mkdir(exist_ok=True)
-
-# Set log level based on debug mode
-log_level = logging.DEBUG if DEBUG_MODE else logging.INFO
-
-logging.basicConfig(
-    level=log_level,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        RotatingFileHandler(LOG_PATH, maxBytes=5 * 1024 * 1024, backupCount=5),
-        logging.StreamHandler(),
-    ],
+configure_logging(
+    debug=os.getenv("DEBUG_MODE", "false").lower() == "true",
+    json_logs=os.getenv("JSON_LOGS", "false").lower() == "true",
 )
-
-# Suppress verbose third-party library logging to avoid log spam
-# These libraries are extremely chatty at DEBUG level
-for noisy_logger in [
-    "selenium",
-    "selenium.webdriver.remote.remote_connection",
-    "urllib3",
-    "urllib3.connectionpool",
-    "requests",
-    "PIL",
-    "chardet",
-]:
-    logging.getLogger(noisy_logger).setLevel(logging.WARNING)
-
-if DEBUG_MODE:
-    logging.info("🔍 DEBUG MODE ENABLED - Verbose logging active")
-
 logging.info("Visa checker logs will rotate under %s", LOG_PATH.resolve())
 
 Selector = Tuple[str, str]
@@ -94,73 +62,7 @@ class CaptchaDetectedError(RuntimeError):
 
 
 def run_cli_setup_wizard(config_path: str = "config.ini", template_path: str = "config.ini.template") -> None:
-    parser = configparser.ConfigParser()
-    parser.optionxform = str
-    parser.read(template_path)
-    if "DEFAULT" not in parser:
-        parser["DEFAULT"] = {}
-    defaults = parser["DEFAULT"]
-
-    def _get(name: str, fallback: str = "") -> str:
-        for key, value in defaults.items():
-            if key.upper() == name:
-                return str(value).strip()
-        return fallback
-
-    def _set(name: str, value: str) -> None:
-        for key in list(defaults.keys()):
-            if key.upper() == name:
-                defaults[key] = value
-                return
-        defaults[name.lower()] = value
-
-    def _prompt(name: str, label: str, *, secret: bool = False, required: bool = True) -> str:
-        current = _get(name)
-        prompt = f"{label}"
-        if current:
-            prompt += f" [{current}]"
-        prompt += ": "
-        while True:
-            raw = getpass(prompt) if secret else input(prompt)
-            value = raw.strip() or current
-            if value or not required:
-                _set(name, value)
-                return value
-            print("This value is required.")
-
-    print("🛠️  CLI Setup Wizard")
-    print("Press Enter to accept defaults shown in brackets.\n")
-    _prompt("EMAIL", "AIS login email")
-    _prompt("PASSWORD", "AIS login password", secret=True)
-    _prompt("CURRENT_APPOINTMENT_DATE", "Current appointment date (YYYY-MM-DD)")
-    _prompt("LOCATION", "Preferred location (example: Ottawa - U.S. Embassy)")
-    _prompt("START_DATE", "Search start date (YYYY-MM-DD)")
-    _prompt("END_DATE", "Search end date (YYYY-MM-DD)")
-    _prompt("CHECK_FREQUENCY_MINUTES", "Check frequency in minutes")
-
-    smtp_profiles = {
-        "1": ("Gmail", "smtp.gmail.com", "587"),
-        "2": ("Outlook", "smtp.office365.com", "587"),
-        "3": ("SendGrid", "smtp.sendgrid.net", "587"),
-        "4": ("Amazon SES", "email-smtp.us-east-1.amazonaws.com", "587"),
-        "5": ("Custom", _get("SMTP_SERVER", "smtp.gmail.com"), _get("SMTP_PORT", "587")),
-    }
-    print("\nSMTP provider:")
-    print("  1) Gmail  2) Outlook  3) SendGrid  4) Amazon SES  5) Custom")
-    profile_choice = input("Choose provider [1]: ").strip() or "1"
-    _, smtp_server, smtp_port = smtp_profiles.get(profile_choice, smtp_profiles["1"])
-    _set("SMTP_SERVER", smtp_server)
-    _set("SMTP_PORT", smtp_port)
-    smtp_user = _prompt("SMTP_USER", "SMTP username")
-    _prompt("SMTP_PASS", "SMTP password / app password / API key", secret=True)
-    _prompt("NOTIFY_EMAIL", "Notification email", required=False)
-    if not _get("NOTIFY_EMAIL") and smtp_user:
-        _set("NOTIFY_EMAIL", smtp_user)
-    _prompt("AUTO_BOOK", "Auto-book when eligible appointment found? (True/False)")
-
-    with open(config_path, "w", encoding="utf-8") as handle:
-        parser.write(handle)
-    print(f"\n✅ Saved configuration to {config_path}")
+    run_cli_setup_wizard_external(config_path=config_path, template_path=template_path)
 
 
 @dataclass
@@ -329,33 +231,7 @@ class CheckerConfig:
 
 
 def send_notification(cfg: CheckerConfig, subject: str, message: str) -> bool:
-    if not cfg.is_smtp_configured():
-        logging.info("Skipping email notification - SMTP not fully configured.")
-        return False
-
-    try:
-        msg = MIMEText(message)
-        msg["Subject"] = subject
-        msg["From"] = cfg.smtp_user
-        msg["To"] = cfg.notify_email
-
-        with smtplib.SMTP(cfg.smtp_server, cfg.smtp_port) as server:
-            server.starttls()
-            server.login(cfg.smtp_user, cfg.smtp_pass)
-            server.sendmail(cfg.smtp_user, cfg.notify_email, msg.as_string())
-
-        logging.info("Email notification sent successfully")
-        return True
-    except smtplib.SMTPAuthenticationError as exc:
-        logging.error("SMTP authentication failed: %s", exc)
-        logging.error(
-            "Please verify your Gmail username and app password. "
-            "App passwords require 2FA to be enabled."
-        )
-    except Exception as exc:  # noqa: BLE001
-        logging.exception("Failed to send email notification: %s", exc)
-
-    return False
+    return send_notification_external(cfg, subject, message)
 
 
 class ProgressReporter:
@@ -763,7 +639,13 @@ class VisaAppointmentChecker:
         "Vancouver": "95",
     }
 
-    def __init__(self, cfg: CheckerConfig, *, headless: bool = True) -> None:
+    def __init__(
+        self,
+        cfg: CheckerConfig,
+        *,
+        headless: bool = True,
+        selectors_path: str = "selectors.yml",
+    ) -> None:
         self.cfg = cfg
         self.headless = headless
         self.driver: Optional[webdriver.Chrome] = None
@@ -789,6 +671,8 @@ class VisaAppointmentChecker:
         self._pattern_file = Path("appointment_patterns.json")
         self._prime_time_windows: List[Tuple[int, int]] = []
         self._burst_mode_active = False
+
+        apply_selector_overrides(self.__class__, selectors_path)
         
         # Initialize strategic components
         self._parse_prime_time_windows()
@@ -863,58 +747,8 @@ class VisaAppointmentChecker:
             self.driver = None
             self._appointment_base_url = None
 
-    def _build_options(self) -> Options:
-        options = Options()
-        if self.headless:
-            options.add_argument("--headless=new")
-        
-        # Basic security and compatibility options
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--disable-extensions")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--window-size=1920,1080")
-        options.add_argument("--log-level=3")
-        
-        # Performance optimizations
-        minimal_browser = os.getenv("MINIMAL_BROWSER", "true").lower() == "true"
-        if minimal_browser:
-            options.add_argument("--disable-images")
-            options.add_argument("--disable-plugins")
-            options.add_argument("--disable-java")
-            options.add_argument("--disable-web-security")
-            options.add_argument("--no-proxy-server")
-            options.add_argument("--disable-background-timer-throttling")
-            options.add_argument("--disable-renderer-backgrounding")
-            options.add_argument("--disable-backgrounding-occluded-windows")
-            
-        # Memory optimizations
-        options.add_argument("--memory-pressure-off")
-        options.add_argument("--max_old_space_size=4096")
-        
-        # Disable unnecessary features
-        prefs = {
-            "profile.default_content_setting_values": {
-                "images": 2 if minimal_browser else 0,
-                "plugins": 2,
-                "popups": 2,
-                "geolocation": 2,
-                "notifications": 2,
-                "media_stream": 2,
-            }
-        }
-        options.add_experimental_option("prefs", prefs)
-        
-        user_agent = os.getenv(
-            "CHECKER_USER_AGENT",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        )
-        options.add_argument(f"--user-agent={user_agent}")
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option("useAutomationExtension", False)
-        return options
+    def _build_options(self):
+        return build_chrome_options(headless=self.headless)
 
     # ------------------------------------------------------------------
     # Strategic optimization methods
@@ -2407,41 +2241,15 @@ class VisaAppointmentChecker:
         return int(dynamic_minutes)
 
     def compute_sleep_seconds(self, base_minutes: int) -> int:
-        # Strategic optimization: Use optimal frequency calculation
-        optimal_minutes = self._calculate_optimal_frequency()
-        
-        # Use the more conservative of base_minutes and optimal calculation
-        if optimal_minutes < base_minutes:
-            adjusted_minutes = optimal_minutes
-            logging.debug("Using optimized frequency: %.1f minutes (prime time: %s)", 
-                        optimal_minutes, self._is_prime_time())
-        else:
-            adjusted_minutes = self._calculate_dynamic_backoff()
-        
-        base_seconds = max(1, adjusted_minutes) * 60
-        
-        jitter = 0
-        if self.cfg.sleep_jitter_seconds:
-            jitter = random.randint(-self.cfg.sleep_jitter_seconds, self.cfg.sleep_jitter_seconds)
-
-        # Reduce minimum sleep time during prime hours
-        min_sleep = 30
-        if self._is_prime_time():
-            min_sleep = 15  # Faster response during prime time
-        
-        sleep_seconds = max(min_sleep, base_seconds + jitter)
-
-        if self._backoff_until:
-            now = datetime.now()
-            if now < self._backoff_until:
-                backoff_seconds = int((self._backoff_until - now).total_seconds())
-                sleep_seconds = max(sleep_seconds, backoff_seconds)
-                logging.debug("Applying scheduled backoff: %s seconds remaining", backoff_seconds)
-            else:
-                logging.debug("Backoff period expired, resuming normal schedule")
-                self._backoff_until = None
-
-        return int(sleep_seconds)
+        sleep_seconds, self._backoff_until = compute_sleep_seconds_external(
+            base_minutes=base_minutes,
+            optimal_minutes=self._calculate_optimal_frequency(),
+            dynamic_backoff_minutes=self._calculate_dynamic_backoff(),
+            sleep_jitter_seconds=self.cfg.sleep_jitter_seconds,
+            is_prime_time=self._is_prime_time(),
+            backoff_until=self._backoff_until,
+        )
+        return sleep_seconds
 
     def _track_performance(self, operation: str, duration: float):
         """Track performance metrics for various operations"""
@@ -2557,6 +2365,21 @@ def main() -> None:
         help="Launch guided CLI setup wizard to create/update config.ini.",
     )
     parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable verbose debug logging.",
+    )
+    parser.add_argument(
+        "--json-logs",
+        action="store_true",
+        help="Emit structured JSON logs to console and log file.",
+    )
+    parser.add_argument(
+        "--selectors-file",
+        default="selectors.yml",
+        help="Path to YAML selector registry (default: selectors.yml).",
+    )
+    parser.add_argument(
         "--frequency",
         type=int,
         default=None,
@@ -2576,6 +2399,7 @@ def main() -> None:
     )
     parser.set_defaults(headless=True)
     args = parser.parse_args()
+    configure_logging(debug=args.debug, json_logs=args.json_logs)
 
     if args.setup:
         run_cli_setup_wizard()
@@ -2612,7 +2436,7 @@ def main() -> None:
     if cfg.heartbeat_path:
         logging.info("Heartbeat file: %s", cfg.heartbeat_path)
 
-    checker = VisaAppointmentChecker(cfg, headless=headless)
+    checker = VisaAppointmentChecker(cfg, headless=headless, selectors_path=args.selectors_file)
     
     # Start progress reporter if interval > 0 and SMTP is configured
     reporter: Optional[ProgressReporter] = None

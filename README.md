@@ -60,6 +60,13 @@ This tool works seamlessly across multiple operating systems with automatic opti
 ```
 US_Visa_Appointment_Canada_Automation/
 ├── visa_appointment_checker.py    # Main automation script with performance optimizations
+├── logging_utils.py               # Logging setup (plain/JSON/debug)
+├── browser_session.py             # Browser/session option builder
+├── notification_utils.py          # Email notification helper
+├── scheduling_utils.py            # Sleep/backoff scheduling helper
+├── selector_registry.py           # YAML selector registry loader + fallback merge
+├── selectors.yml                  # Selector override registry (user-editable)
+├── config_wizard.py               # Guided CLI config wizard
 ├── web_ui.py                      # Web interface for configuration
 ├── install.py                     # Windows installation script
 ├── install.bat                    # Windows batch installer
@@ -299,6 +306,13 @@ For all CLI options:
 python visa_appointment_checker.py --help
 ```
 
+Troubleshooting-oriented CLI flags:
+```bash
+python visa_appointment_checker.py --debug
+python visa_appointment_checker.py --json-logs
+python visa_appointment_checker.py --selectors-file selectors.yml
+```
+
 This guided setup is recommended for first-time users who prefer terminal-only setup.
 
 ### Method 4: Interactive Configuration (Linux)
@@ -336,6 +350,15 @@ SMTP_PORT = 587
 
 Every configuration key can be provided as an environment variable (for example `EMAIL`, `PASSWORD`, `SMTP_USER`, `SMTP_PASS`, etc.).
 Environment variables take precedence over `config.ini`, which makes it easier to run the checker in containers or CI pipelines without writing secrets to disk.
+
+Telemetry/logging environment flags:
+- `DEBUG_MODE=true` for verbose logs
+- `JSON_LOGS=true` for structured JSON log output
+
+### Selector Resilience Registry
+
+The checker reads optional selector overrides from `selectors.yml`.
+If an override exists, it is used first, and built-in selectors remain as fallback.
 
 ## 🚀 Usage
 
