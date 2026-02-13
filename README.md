@@ -71,7 +71,9 @@ US_Visa_Appointment_Canada_Automation/
 ├── config.ini.template          # Configuration template with placeholder values
 ├── .env.performance              # Browser performance environment variables
 ├── .gitignore                   # Git ignore file to protect personal data
+├── .github/workflows/ci.yml     # CI checks (secrets safety, lint, format, tests)
 ├── visa_checker.log              # Application logs with performance metrics
+├── tests/                        # Smoke tests for config, selectors, and date parsing
 ├── configure.sh                  # Interactive configuration script (Linux)
 ├── visa_env/                     # Virtual environment (Linux only)
 ├── run_visa_checker.sh           # Linux wrapper script (created by installer)
@@ -192,6 +194,8 @@ cp config.ini.template config.ini
 ```
 
 Then edit `config.ini` with your information:
+
+The checker validates configuration values at startup and exits with clear error messages when required keys are missing or values are invalid (for example, incorrect date format or invalid SMTP port).
 
 ```ini
 [DEFAULT]
