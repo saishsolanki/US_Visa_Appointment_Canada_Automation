@@ -70,9 +70,9 @@ RUN mkdir -p logs artifacts
 # Note: We run as root to avoid permission issues with mounted volumes
 # Security is maintained through Docker's resource limits and network isolation
 
-# Health check: verify log file is being written
+# Health check: verify the checker process is still running as PID 1
 HEALTHCHECK --interval=5m --timeout=30s --start-period=60s --retries=3 \
-    CMD test -f /app/logs/visa_checker.log || exit 1
+    CMD python3 -c "import pathlib, sys; cmdline = pathlib.Path('/proc/1/cmdline').read_text(errors='ignore'); sys.exit(0 if 'visa_appointment_checker.py' in cmdline else 1)"
 
 # Default command - run checker with 5-minute frequency
 CMD ["python3", "visa_appointment_checker.py", "--frequency", "5"]

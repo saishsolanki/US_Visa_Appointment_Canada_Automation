@@ -127,6 +127,23 @@ chmod +x install_kali.sh && ./install_kali.sh
 
 These scripts will install Python3, pip, create a virtual environment, install dependencies, and create default configuration with wrapper scripts and performance optimizations.
 
+### Linux: Install as a systemd service
+The repository includes a ready-to-customize `visa-checker.service` file for unattended startup.
+
+```bash
+sudo cp visa-checker.service /etc/systemd/system/visa-checker.service
+sudo nano /etc/systemd/system/visa-checker.service
+# Replace USER_NAME and paths with your actual Linux username/install path
+sudo systemctl daemon-reload
+sudo systemctl enable --now visa-checker.service
+sudo systemctl status visa-checker.service
+```
+
+To review logs:
+```bash
+journalctl -u visa-checker.service -f
+```
+
 ### What the Installers Do
 
 #### Windows Installation (`install.bat` / `install.py`)
@@ -544,8 +561,19 @@ pip install webdriver-manager
 - [`README.md`](README.md) - Main documentation (this file)
 - [`GMAIL_SETUP_GUIDE.md`](GMAIL_SETUP_GUIDE.md) - Detailed Gmail SMTP configuration
 - [`PERFORMANCE_OPTIMIZATIONS.md`](PERFORMANCE_OPTIMIZATIONS.md) - Comprehensive performance guide
+- [`CHANGELOG.md`](CHANGELOG.md) - Versioned release notes
 - `visa_checker.log` - Runtime logs with performance metrics
 - `.env.performance` - Browser performance environment variables
+
+## 📦 Releases and stable Docker tags
+
+- Stable releases are published as Git tags like `v1.2.0` with matching notes in [`CHANGELOG.md`](CHANGELOG.md).
+- Docker images are published to GitHub Container Registry as `ghcr.io/saishsolanki/us_visa_appointment_canada_automation:<tag>`.
+- After a release, users can pin a stable image version (instead of floating tags):
+
+```bash
+docker pull ghcr.io/saishsolanki/us_visa_appointment_canada_automation:v1.2.0
+```
 
 ## 🤝 Contributing
 

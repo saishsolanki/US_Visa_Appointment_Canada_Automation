@@ -19,6 +19,16 @@ docker compose up -d
 
 That's it! The checker is now running in the background.
 
+## 📦 Use a stable, versioned image
+
+Release images are published as version tags (for example `v1.2.0`) to GHCR:
+
+```bash
+docker pull ghcr.io/saishsolanki/us_visa_appointment_canada_automation:v1.2.0
+```
+
+Pinning a versioned tag avoids unexpected behavior from unpinned latest builds.
+
 ## 📋 Prerequisites
 
 - **Docker Engine** 20.10+ (with Docker Compose v2)
