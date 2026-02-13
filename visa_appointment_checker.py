@@ -180,18 +180,28 @@ class CheckerConfig:
 
         frequency = _get_int("CHECK_FREQUENCY_MINUTES", 5)
         smtp_port = _get_int("SMTP_PORT", 587)
-
+        current_appointment_date = _get("CURRENT_APPOINTMENT_DATE")
         start_date = _get("START_DATE")
         end_date = _get("END_DATE")
 
+        validation_errors: List[str] = []
+        try:
+            datetime.strptime(current_appointment_date, "%Y-%m-%d")
+        except ValueError:
+            validation_errors.append("CURRENT_APPOINTMENT_DATE must be formatted as YYYY-MM-DD")
         try:
             start_dt = datetime.strptime(start_date, "%Y-%m-%d")
             end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-        except ValueError as exc:  # noqa: B904
-            raise ValueError("START_DATE and END_DATE must be formatted as YYYY-MM-DD") from exc
-
-        if start_dt > end_dt:
-            raise ValueError("START_DATE must be earlier than or equal to END_DATE")
+            if start_dt > end_dt:
+                validation_errors.append("START_DATE must be earlier than or equal to END_DATE")
+        except ValueError:
+            validation_errors.append("START_DATE and END_DATE must be formatted as YYYY-MM-DD")
+        if frequency < 1:
+            validation_errors.append("CHECK_FREQUENCY_MINUTES must be greater than or equal to 1")
+        if not 1 <= smtp_port <= 65535:
+            validation_errors.append("SMTP_PORT must be between 1 and 65535")
+        if validation_errors:
+            raise ValueError("Invalid configuration:\n- " + "\n- ".join(validation_errors))
 
         def _get_float(key: str, fallback: Optional[float] = None) -> float:
             try:
@@ -202,7 +212,7 @@ class CheckerConfig:
         return cls(
             email=_get("EMAIL"),
             password=_get("PASSWORD"),
-            current_appointment_date=_get("CURRENT_APPOINTMENT_DATE"),
+            current_appointment_date=current_appointment_date,
             location=_get("LOCATION"),
             start_date=start_date,
             end_date=end_date,
@@ -1673,7 +1683,6 @@ class VisaAppointmentChecker:
         self._track_performance('availability_check', nav_time)
 
     def _collect_available_dates(self, max_months: int = 3) -> List[str]:
-        driver = self.ensure_driver()
         available: List[str] = []
 
         calendar = self._is_selector_visible(self.DATEPICKER_CONTAINER_SELECTORS)
