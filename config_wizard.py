@@ -37,7 +37,7 @@ def run_cli_setup_wizard(config_path: str = "config.ini", template_path: str = "
                 return value
             print("This value is required.")
 
-    print("CLI Setup Wizard")
+    print("🛠️  CLI Setup Wizard")
     print("Press Enter to accept defaults shown in brackets.\n")
     _prompt("EMAIL", "AIS login email")
     _prompt("PASSWORD", "AIS login password", secret=True)
@@ -69,4 +69,4 @@ def run_cli_setup_wizard(config_path: str = "config.ini", template_path: str = "
 
     with open(config_path, "w", encoding="utf-8") as handle:
         parser.write(handle)
-    print(f"\nSaved configuration to {config_path}")
+    print(f"\n✅ Saved configuration to {config_path}")

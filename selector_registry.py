@@ -1,5 +1,6 @@
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -17,19 +18,54 @@ BY_MAP = {
     "LINK_TEXT": By.LINK_TEXT,
     "PARTIAL_LINK_TEXT": By.PARTIAL_LINK_TEXT,
 }
+_APPLIED_LOCK = threading.Lock()
+_APPLIED_TARGETS = set()
 
 
 def _load_yaml_like(path: Path):
     text = path.read_text(encoding="utf-8")
     try:
         return json.loads(text)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as json_exc:
         try:
             import yaml  # type: ignore
 
             return yaml.safe_load(text)
-        except Exception:
-            logging.warning("Unable to parse selector registry file: %s", path)
+        except Exception as yaml_exc:
+            parsed = {}
+            current_key = None
+            current_item = None
+            for raw_line in text.splitlines():
+                line = raw_line.rstrip()
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if not line.startswith(" ") and stripped.endswith(":"):
+                    current_key = stripped[:-1]
+                    parsed[current_key] = []
+                    current_item = None
+                    continue
+                if current_key is None:
+                    continue
+                if stripped.startswith("- "):
+                    current_item = {}
+                    parsed[current_key].append(current_item)
+                    stripped = stripped[2:].strip()
+                    if ":" in stripped:
+                        k, v = stripped.split(":", 1)
+                        current_item[k.strip()] = v.strip().strip("'\"")
+                    continue
+                if ":" in stripped and current_item is not None:
+                    k, v = stripped.split(":", 1)
+                    current_item[k.strip()] = v.strip().strip("'\"")
+            if parsed:
+                return parsed
+            logging.warning(
+                "Unable to parse selector registry file: %s (json_error=%s, yaml_error=%s)",
+                path,
+                json_exc,
+                yaml_exc,
+            )
             return {}
 
 
@@ -59,6 +95,11 @@ def load_selector_registry(path: str = "selectors.yml") -> Dict[str, List[Select
 
 
 def apply_selector_overrides(target_cls, path: str = "selectors.yml") -> None:
+    target_key = (id(target_cls), path)
+    with _APPLIED_LOCK:
+        if target_key in _APPLIED_TARGETS:
+            return
+
     registry = load_selector_registry(path)
     if not registry:
         return
@@ -78,3 +119,5 @@ def apply_selector_overrides(target_cls, path: str = "selectors.yml") -> None:
             len(override_selectors),
             len(default_selectors),
         )
+    with _APPLIED_LOCK:
+        _APPLIED_TARGETS.add(target_key)

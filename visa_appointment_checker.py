@@ -17,6 +17,7 @@ from typing import List, Optional, Tuple, Dict, Any
 from urllib.parse import urljoin
 
 from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
@@ -47,12 +48,6 @@ RESCHEDULE_URLS = [
 
 # Keep webdriver-manager quiet unless user overrides
 os.environ.setdefault("WDM_LOG_LEVEL", "0")
-
-configure_logging(
-    debug=os.getenv("DEBUG_MODE", "false").lower() == "true",
-    json_logs=os.getenv("JSON_LOGS", "false").lower() == "true",
-)
-logging.info("Visa checker logs will rotate under %s", LOG_PATH.resolve())
 
 Selector = Tuple[str, str]
 
@@ -747,7 +742,7 @@ class VisaAppointmentChecker:
             self.driver = None
             self._appointment_base_url = None
 
-    def _build_options(self):
+    def _build_options(self) -> Options:
         return build_chrome_options(headless=self.headless)
 
     # ------------------------------------------------------------------
@@ -2400,6 +2395,7 @@ def main() -> None:
     parser.set_defaults(headless=True)
     args = parser.parse_args()
     configure_logging(debug=args.debug, json_logs=args.json_logs)
+    logging.info("Visa checker logs will rotate under %s", LOG_PATH.resolve())
 
     if args.setup:
         run_cli_setup_wizard()

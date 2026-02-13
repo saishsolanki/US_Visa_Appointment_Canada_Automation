@@ -1,13 +1,15 @@
-{
-  "EMAIL_SELECTORS": [
-    { "by": "ID", "value": "user_email" },
-    { "by": "NAME", "value": "user[email]" }
-  ],
-  "PASSWORD_SELECTORS": [
-    { "by": "ID", "value": "user_password" },
-    { "by": "NAME", "value": "user[password]" }
-  ],
-  "SIGN_IN_SELECTORS": [
-    { "by": "NAME", "value": "commit" }
-  ]
-}
+EMAIL_SELECTORS:
+  - by: ID
+    value: user_email
+  - by: NAME
+    value: user[email]
+
+PASSWORD_SELECTORS:
+  - by: ID
+    value: user_password
+  - by: NAME
+    value: user[password]
+
+SIGN_IN_SELECTORS:
+  - by: NAME
+    value: commit

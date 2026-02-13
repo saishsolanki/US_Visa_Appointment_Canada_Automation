@@ -23,8 +23,11 @@ def send_notification(cfg, subject: str, message: str) -> bool:
         return True
     except smtplib.SMTPAuthenticationError as exc:
         logging.error("SMTP authentication failed: %s", exc)
+        guidance = "Please verify your SMTP username and password/app key."
+        if "gmail" in str(getattr(cfg, "smtp_server", "")).lower():
+            guidance += " For Gmail, use an App Password and enable 2FA."
         logging.error(
-            "Please verify your SMTP username and password/app key."
+            guidance
         )
     except Exception as exc:  # noqa: BLE001
         logging.exception("Failed to send email notification: %s", exc)
