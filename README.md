@@ -25,6 +25,7 @@ This comprehensive automation tool helps Canadian users find earlier US visa app
 - **Memory Management**: Automatic cleanup of browser artifacts and resource optimization
 - **Comprehensive Logging**: Detailed logs for monitoring and debugging with performance metrics
 - **Web UI Configuration**: User-friendly web interface for easy setup
+- **CLI Help + Setup Wizard**: Use `--help` and `--setup` for terminal-only onboarding
 - **Cross-Platform**: Works on Windows, Ubuntu, Debian, Fedora, Arch Linux, and Kali Linux
 - **Open Source**: Completely free with no hidden costs
 
@@ -59,6 +60,13 @@ This tool works seamlessly across multiple operating systems with automatic opti
 ```
 US_Visa_Appointment_Canada_Automation/
 ├── visa_appointment_checker.py    # Main automation script with performance optimizations
+├── logging_utils.py               # Logging setup (plain/JSON/debug)
+├── browser_session.py             # Browser/session option builder
+├── notification_utils.py          # Email notification helper
+├── scheduling_utils.py            # Sleep/backoff scheduling helper
+├── selector_registry.py           # YAML selector registry loader + fallback merge
+├── selectors.yml                  # Selector override registry (user-editable)
+├── config_wizard.py               # Guided CLI config wizard
 ├── web_ui.py                      # Web interface for configuration
 ├── install.py                     # Windows installation script
 ├── install.bat                    # Windows batch installer
@@ -82,6 +90,7 @@ US_Visa_Appointment_Canada_Automation/
 │   └── index.html                # Web UI template
 ├── run.bat                       # Windows runner script
 ├── README.md                     # This file
+├── FAQ.md                        # Quick troubleshooting flowchart and FAQs
 ├── PERFORMANCE_OPTIMIZATIONS.md  # Detailed performance optimization guide
 ├── GMAIL_SETUP_GUIDE.md         # Gmail SMTP configuration guide
 ├── SECURITY.md                  # Security and privacy guide
@@ -291,17 +300,69 @@ The system includes advanced performance optimizations. For detailed configurati
 - Use `.env.performance` file for browser performance variables
 - Monitor performance metrics in logs with "Performance stats" indicators
 
-### Method 3: Interactive Configuration (Linux)
+### Method 3: Guided CLI Setup Wizard (No Web UI Needed)
+```bash
+python visa_appointment_checker.py --setup
+```
+
+For all CLI options:
+```bash
+python visa_appointment_checker.py --help
+```
+
+Troubleshooting-oriented CLI flags:
+```bash
+python visa_appointment_checker.py --debug
+python visa_appointment_checker.py --json-logs
+python visa_appointment_checker.py --selectors-file selectors.yml
+```
+
+This guided setup is recommended for first-time users who prefer terminal-only setup.
+
+### Method 4: Interactive Configuration (Linux)
 For Linux users, you can use the interactive configuration script:
 ```bash
 chmod +x configure.sh && ./configure.sh
 ```
 This will guide you through entering your credentials step by step.
 
+### Non-Gmail SMTP Examples
+
+Use these values in `config.ini` (or choose the provider in `--setup`):
+
+```ini
+# Outlook / Microsoft 365
+SMTP_SERVER = smtp.office365.com
+SMTP_PORT = 587
+```
+
+```ini
+# SendGrid
+SMTP_SERVER = smtp.sendgrid.net
+SMTP_PORT = 587
+SMTP_USER = apikey
+SMTP_PASS = SG.your_api_key
+```
+
+```ini
+# Amazon SES (replace region)
+SMTP_SERVER = email-smtp.us-east-1.amazonaws.com
+SMTP_PORT = 587
+```
+
 ### Environment Variable Overrides
 
 Every configuration key can be provided as an environment variable (for example `EMAIL`, `PASSWORD`, `SMTP_USER`, `SMTP_PASS`, etc.).
 Environment variables take precedence over `config.ini`, which makes it easier to run the checker in containers or CI pipelines without writing secrets to disk.
+
+Telemetry/logging environment flags:
+- `DEBUG_MODE=true` for verbose logs
+- `JSON_LOGS=true` for structured JSON log output
+
+### Selector Resilience Registry
+
+The checker reads optional selector overrides from `selectors.yml`.
+If an override exists, it is used first, and built-in selectors remain as fallback.
 
 ## 🚀 Usage
 
@@ -501,6 +562,8 @@ For detailed performance configuration, see [`PERFORMANCE_OPTIMIZATIONS.md`](PER
 
 ## 🔧 Troubleshooting
 
+For a quick "if this error, then do X" guide, see [`FAQ.md`](FAQ.md).
+
 ### Common Issues
 
 **"Chrome driver not found"**
@@ -563,6 +626,7 @@ pip install webdriver-manager
 
 ### Documentation Resources
 - [`README.md`](README.md) - Main documentation (this file)
+- [`FAQ.md`](FAQ.md) - Quick troubleshooting flowchart and fixes
 - [`GMAIL_SETUP_GUIDE.md`](GMAIL_SETUP_GUIDE.md) - Detailed Gmail SMTP configuration
 - [`PERFORMANCE_OPTIMIZATIONS.md`](PERFORMANCE_OPTIMIZATIONS.md) - Comprehensive performance guide
 - [`CHANGELOG.md`](CHANGELOG.md) - Versioned release notes
