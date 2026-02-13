@@ -579,6 +579,15 @@ class VisaAppointmentChecker:
             By.XPATH,
             "//input[@type='checkbox' and contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'privacy')]",
         ),
+        # Additional selector for "I understand" type checkboxes
+        (
+            By.XPATH,
+            "//input[@type='checkbox' and contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'understand')]",
+        ),
+        (
+            By.XPATH,
+            "//input[@type='checkbox' and (contains(@name, 'understand') or contains(@id, 'understand'))]",
+        ),
     ]
 
     PRIVACY_LABEL_SELECTORS: List[Selector] = [
@@ -590,6 +599,11 @@ class VisaAppointmentChecker:
             By.XPATH,
             "//label[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'privacy policy')]",
         ),
+        # Additional selector for "I understand and continue" labels
+        (
+            By.XPATH,
+            "//label[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'understand')]",
+        ),
     ]
 
     GROUP_CONTINUE_SELECTORS: List[Selector] = [
@@ -598,12 +612,30 @@ class VisaAppointmentChecker:
             By.XPATH,
             "//a[contains(@class, 'button') and contains(@href, 'continue_actions') and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'continue')]",
         ),
+        # Simpler selector for plain Continue links in list items
+        (
+            By.XPATH,
+            "//li/a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'continue')]",
+        ),
+        (
+            By.XPATH,
+            "//a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'continue')]",
+        ),
     ]
 
     RESCHEDULE_TOGGLE_SELECTORS: List[Selector] = [
         (
             By.XPATH,
             "//a[contains(@class, 'accordion-title') and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'reschedule appointment')]",
+        ),
+        # Selector for h5 inside link structure: <li><a><h5>Reschedule Appointment</h5></a></li>
+        (
+            By.XPATH,
+            "//li/a[.//h5[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'reschedule appointment')]]",
+        ),
+        (
+            By.XPATH,
+            "//a[.//h5[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'reschedule appointment')]]",
         ),
     ]
 
@@ -613,6 +645,11 @@ class VisaAppointmentChecker:
             "//a[contains(@href, '/appointment') and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'reschedule')]",
         ),
         (By.CSS_SELECTOR, "a[href*='/appointment']"),
+        # Additional selector for h5-based reschedule links
+        (
+            By.XPATH,
+            "//a[.//h5[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'reschedule')]]",
+        ),
     ]
 
     APPOINTMENT_FORM_SELECTORS: List[Selector] = [
@@ -1239,17 +1276,34 @@ class VisaAppointmentChecker:
             if self._ensure_on_appointment_form():
                 return
 
+        # Step 1: Click the first "Reschedule Appointment" link/toggle (if needed to expand section)
         if "continue_actions" in current:
             logging.info("On continue actions page; expanding reschedule section")
+            toggler = self._find_element(self.RESCHEDULE_TOGGLE_SELECTORS, wait_time=10, clickable=True)
+            if toggler:
+                self._scroll_into_view(toggler)
+                try:
+                    toggler.click()
+                    logging.info("Clicked first reschedule toggle/link")
+                except (WebDriverException, ElementClickInterceptedException):
+                    driver.execute_script("arguments[0].click();", toggler)
+                    logging.info("Clicked first reschedule toggle/link via JavaScript")
+                time.sleep(1)
+                self._wait_for_page_ready(driver)
+                if self._ensure_on_appointment_form():
+                    return
         else:
             toggler = self._find_element(self.RESCHEDULE_TOGGLE_SELECTORS, wait_time=10, clickable=True)
             if toggler:
                 self._scroll_into_view(toggler)
                 try:
                     toggler.click()
+                    logging.info("Clicked reschedule toggle/accordion")
                 except (WebDriverException, ElementClickInterceptedException):
                     driver.execute_script("arguments[0].click();", toggler)
+                    logging.info("Clicked reschedule toggle/accordion via JavaScript")
                 time.sleep(1)
+                self._wait_for_page_ready(driver)
                 if self._ensure_on_appointment_form():
                     return
 
@@ -1265,6 +1319,7 @@ class VisaAppointmentChecker:
             if self._ensure_on_appointment_form():
                 return
 
+        # Step 2: Click the second "Reschedule Appointment" button/link to actually open the form
         reschedule_button = self._find_element(self.RESCHEDULE_BUTTON_SELECTORS, wait_time=10, clickable=False)
         if reschedule_button:
             href = ""
@@ -1274,7 +1329,7 @@ class VisaAppointmentChecker:
                 pass
             
             if href:
-                logging.info("Navigating directly to reschedule link: %s", href)
+                logging.info("Clicking second reschedule link - navigating to: %s", href)
                 self._safe_get(href)
                 time.sleep(2)
                 self._dismiss_overlays()
@@ -1284,9 +1339,11 @@ class VisaAppointmentChecker:
                 try:
                     self._scroll_into_view(reschedule_button)
                     reschedule_button.click()
+                    logging.info("Clicked second reschedule button")
                 except (ElementClickInterceptedException, ElementNotInteractableException, WebDriverException, StaleElementReferenceException):
                     try:
                         driver.execute_script("arguments[0].click();", reschedule_button)
+                        logging.info("Clicked second reschedule button via JavaScript")
                     except (WebDriverException, StaleElementReferenceException):
                         pass
                 time.sleep(2)
