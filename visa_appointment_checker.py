@@ -3,7 +3,9 @@ import configparser
 import json
 import logging
 import os
+import random
 import smtplib
+import socket
 import threading
 import time
 from dataclasses import dataclass
@@ -262,6 +264,9 @@ class ProgressReporter:
         self._failure_count = 0
         self._captcha_count = 0
         self._lock = threading.Lock()
+        # Backoff tracking for failed email sends
+        self._consecutive_send_failures = 0
+        self._next_send_attempt: Optional[datetime] = None
     
     def start(self) -> None:
         """Start the background reporter thread."""
@@ -291,7 +296,11 @@ class ProgressReporter:
                 self._captcha_count += 1
     
     def _report_loop(self) -> None:
-        """Background loop that sends reports at configured intervals."""
+        """Background loop that sends reports at configured intervals.
+
+        Implements progressive back-off when email sends fail (e.g. SMTP
+        unreachable) so the log file doesn't get flooded with errors.
+        """
         while self.running:
             # Sleep in small increments to allow quick shutdown
             for _ in range(60):  # Check every second for 1 minute
@@ -301,11 +310,28 @@ class ProgressReporter:
             
             elapsed = datetime.now() - self.last_report_time
             if elapsed >= timedelta(hours=self.interval_hours):
+                # Honour send-failure backoff
+                if self._next_send_attempt and datetime.now() < self._next_send_attempt:
+                    continue
+
                 try:
                     self._send_progress_report()
                     self.last_report_time = datetime.now()
+                    # Reset backoff on success
+                    self._consecutive_send_failures = 0
+                    self._next_send_attempt = None
                 except Exception as exc:
-                    logging.error("Failed to send progress report: %s", exc)
+                    self._consecutive_send_failures += 1
+                    # Exponential back-off: 5 min → 10 → 20 → 40 → … capped at 2 hours
+                    backoff_minutes = min(120, 5 * (2 ** (self._consecutive_send_failures - 1)))
+                    self._next_send_attempt = datetime.now() + timedelta(minutes=backoff_minutes)
+                    logging.warning(
+                        "Failed to send progress report (attempt #%d): %s — "
+                        "next retry in %d minutes",
+                        self._consecutive_send_failures,
+                        exc,
+                        backoff_minutes,
+                    )
     
     def _get_stats(self) -> Dict[str, Any]:
         """Get current statistics thread-safely."""
@@ -676,6 +702,11 @@ class VisaAppointmentChecker:
         self._pattern_file = Path("appointment_patterns.json")
         self._prime_time_windows: List[Tuple[int, int]] = []
         self._burst_mode_active = False
+
+        # Network health tracking
+        self._consecutive_network_errors = 0
+        self._last_successful_network_time: Optional[datetime] = None
+        self._network_backoff_until: Optional[datetime] = None
 
         apply_selector_overrides(self.__class__, selectors_path)
         
@@ -1948,6 +1979,80 @@ class VisaAppointmentChecker:
         
         return self._find_element_raw(selectors, wait_time=wait_time, clickable=clickable)
 
+    # ------------------------------------------------------------------
+    # Network health utilities
+    # ------------------------------------------------------------------
+    _NETWORK_ERROR_PATTERNS = (
+        "err_name_not_resolved",
+        "name resolution",
+        "dns_probe",
+        "err_connection_refused",
+        "err_connection_timed_out",
+        "err_internet_disconnected",
+        "err_network_changed",
+        "err_address_unreachable",
+        "temporary failure in name resolution",
+        "network is unreachable",
+        "no address associated",
+        "could not resolve host",
+        "connection timed out",
+    )
+
+    @staticmethod
+    def _is_network_error(exc: Exception) -> bool:
+        """Return True if *exc* looks like a DNS / connectivity failure."""
+        msg = str(exc).lower()
+        return any(p in msg for p in VisaAppointmentChecker._NETWORK_ERROR_PATTERNS)
+
+    def _check_internet_connectivity(self, timeout: float = 5.0) -> bool:
+        """Quick TCP connectivity probe (no HTTP overhead).
+
+        Tries connecting to well-known DNS resolvers on port 53 as a
+        lightweight 'can we reach the internet?' check.
+        """
+        targets = [("8.8.8.8", 53), ("1.1.1.1", 53), ("208.67.222.222", 53)]
+        for host, port in targets:
+            try:
+                with socket.create_connection((host, port), timeout=timeout):
+                    return True
+            except OSError:
+                continue
+        return False
+
+    def _record_network_success(self) -> None:
+        """Reset network error counters after a successful operation."""
+        if self._consecutive_network_errors > 0:
+            logging.info(
+                "🌐 Network recovered after %d consecutive failures",
+                self._consecutive_network_errors,
+            )
+        self._consecutive_network_errors = 0
+        self._last_successful_network_time = datetime.now()
+        self._network_backoff_until = None
+
+    def _record_network_failure(self) -> int:
+        """Increment network error counter and compute backoff.
+
+        Returns the recommended sleep time in seconds before the next
+        attempt so that callers can implement exponential back-off.
+        """
+        self._consecutive_network_errors += 1
+        n = self._consecutive_network_errors
+
+        # Exponential back-off capped at 15 minutes
+        backoff_seconds = min(60 * 15, 30 * (2 ** min(n - 1, 5)))
+        # Add some jitter
+        backoff_seconds += random.randint(0, min(30, backoff_seconds // 4))
+
+        self._network_backoff_until = datetime.now() + timedelta(seconds=backoff_seconds)
+        logging.warning(
+            "🌐 Network failure #%d — backing off %d s (until %s)",
+            n,
+            backoff_seconds,
+            self._network_backoff_until.strftime("%H:%M:%S"),
+        )
+        return backoff_seconds
+
     def _safe_get(self, url: str, *, attempts: Optional[int] = None, detect_captcha: bool = False) -> None:
         driver = self.ensure_driver()
         total_attempts = attempts or self.cfg.max_retry_attempts
@@ -1959,13 +2064,23 @@ class VisaAppointmentChecker:
                 self._wait_for_page_ready(driver)
                 if detect_captcha:
                     self._detect_captcha()
+                self._record_network_success()
                 return
             except CaptchaDetectedError as exc:
                 last_exc = exc
                 logging.warning("Captcha encountered while loading %s: %s", url, exc)
+                self._record_network_success()  # reached server
                 break
             except (WebDriverException, TimeoutException) as exc:
                 last_exc = exc
+                # For network errors, fail fast — retrying immediately
+                # won't help.  The main loop handles the backoff.
+                if self._is_network_error(exc):
+                    logging.warning(
+                        "Network error loading %s (attempt %s/%s): %s",
+                        url, attempt, total_attempts, exc,
+                    )
+                    break
                 if attempt == total_attempts:
                     break
                 sleep_seconds = self.cfg.retry_backoff_seconds * attempt
@@ -1979,7 +2094,7 @@ class VisaAppointmentChecker:
                 )
                 time.sleep(sleep_seconds)
 
-        if not isinstance(last_exc, CaptchaDetectedError):
+        if last_exc and not isinstance(last_exc, CaptchaDetectedError) and not self._is_network_error(last_exc):
             self._capture_artifact("navigation_failure")
         if last_exc:
             raise last_exc
@@ -2326,7 +2441,9 @@ class VisaAppointmentChecker:
         signature = f"{type(exc).__name__}:{str(exc)}"
         now = datetime.now(timezone.utc)
 
-        self._capture_artifact(f"error_{type(exc).__name__.lower()}")
+        # Skip heavy artifact capture for network errors (nothing useful to capture)
+        if not self._is_network_error(exc):
+            self._capture_artifact(f"error_{type(exc).__name__.lower()}")
 
         # If this is a rate limiting or login issue, schedule a longer backoff
         error_message = str(exc).lower()
@@ -2335,6 +2452,12 @@ class VisaAppointmentChecker:
             backoff_minutes = max(15, self.cfg.check_frequency_minutes * 3)
             self._backoff_until = datetime.now() + timedelta(minutes=backoff_minutes)
             logging.warning("Login rate limiting detected, scheduling %s minute backoff", backoff_minutes)
+
+        # Don't attempt to send email notifications for network errors —
+        # the email would fail too and just add noise.
+        if self._is_network_error(exc):
+            logging.info("Skipping error notification — network is unreachable")
+            return
 
         notify = True
         if self._last_error_signature == signature and self._last_notification_time:
@@ -2454,26 +2577,64 @@ def main() -> None:
         while True:
             check_count += 1
             start_time = datetime.now()
+
+            # ---- Network pre-check ----
+            # If we are in a network-backoff window, wait it out before
+            # burning a Chrome launch + page load cycle.
+            if checker._network_backoff_until and datetime.now() < checker._network_backoff_until:
+                wait_secs = (checker._network_backoff_until - datetime.now()).total_seconds()
+                print(
+                    f"🌐 Network backoff active — sleeping {int(wait_secs)}s "
+                    f"(until {checker._network_backoff_until.strftime('%H:%M:%S')})"
+                )
+                time.sleep(max(1, wait_secs))
+                # Quick connectivity probe before proceeding
+                if not checker._check_internet_connectivity():
+                    backoff = checker._record_network_failure()
+                    print(f"🌐 Still offline — extending backoff by {backoff}s")
+                    continue
+
             print(f"\n🔄 Starting check #{check_count} at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
             print("-" * 30)
 
             success = False
             captcha_detected = False
+            network_error = False
             try:
                 checker.perform_check()
                 print(f"✅ Check #{check_count} completed successfully")
                 success = True
+                checker._record_network_success()
             except CaptchaDetectedError as exc:
                 print(f"🤖 Check #{check_count} blocked by captcha: {exc}")
                 captcha_detected = True
+                # Captcha means we reached the server — network is fine
+                checker._record_network_success()
             except Exception as exc:  # noqa: BLE001
                 print(f"❌ Check #{check_count} failed: {exc}")
+                if checker._is_network_error(exc):
+                    network_error = True
+                    backoff = checker._record_network_failure()
+                    print(f"🌐 Network error detected — will retry in {backoff}s")
 
             # Record stats for progress reporter
             if reporter:
                 reporter.record_check(success=success, captcha=captcha_detected)
 
             checker.post_check(success=success)
+
+            # If we just hit a network error, use the network backoff instead
+            # of the normal sleep interval (which would be too short).
+            if network_error and checker._network_backoff_until:
+                remaining = (checker._network_backoff_until - datetime.now()).total_seconds()
+                if remaining > 0:
+                    print(
+                        f"⏰ Network backoff until "
+                        f"{checker._network_backoff_until.strftime('%H:%M:%S')}"
+                    )
+                    print("💤 Sleeping (network recovery)...")
+                    time.sleep(remaining)
+                    continue
 
             sleep_seconds = checker.compute_sleep_seconds(frequency)
             next_check = datetime.now() + timedelta(seconds=sleep_seconds)
