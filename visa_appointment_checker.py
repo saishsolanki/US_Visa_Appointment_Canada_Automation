@@ -680,7 +680,16 @@ class VisaAppointmentChecker:
         self.cfg = cfg
         self.headless = headless
         self.driver: Optional[webdriver.Chrome] = None
-        self.driver_path = ChromeDriverManager().install()
+        self.driver_path: Optional[str] = None
+        # Try webdriver-manager first; if offline, fall back to Selenium Manager
+        try:
+            self.driver_path = ChromeDriverManager().install()
+        except Exception as exc:
+            logging.warning(
+                "webdriver-manager could not resolve driver (%s) — "
+                "falling back to Selenium Manager (built-in)",
+                exc,
+            )
         self._last_error_signature: Optional[str] = None
         self._last_notification_time: Optional[datetime] = None
         self._appointment_base_url: Optional[str] = None
@@ -730,7 +739,7 @@ class VisaAppointmentChecker:
             return self.driver
 
         options = self._build_options()
-        service = Service(self.driver_path)
+        service = Service(self.driver_path) if self.driver_path else Service()
 
         try:
             driver = webdriver.Chrome(service=service, options=options)
