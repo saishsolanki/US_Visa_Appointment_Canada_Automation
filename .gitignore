@@ -24,3 +24,6 @@ artifacts/
 
 # Pattern learning data
 appointment_patterns.json
+
+# Database files
+*.db
