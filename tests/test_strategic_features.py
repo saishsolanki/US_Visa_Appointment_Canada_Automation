@@ -729,3 +729,120 @@ class TestConfigHotReload:
         checker = self._make_checker()
         result = checker._check_config_reload()
         assert result is False
+
+
+# =========================================================================
+# 16. Scheduling Limit Warning handling
+# =========================================================================
+
+class TestSchedulingLimitWarning:
+    """Tests for the Scheduling Limit Warning detection and escalating backoff."""
+
+    def _make_checker(self, **cfg_kw):
+        from visa_appointment_checker import VisaAppointmentChecker, CaptchaDetectedError
+
+        cfg = _make_config(**cfg_kw)
+        with patch.object(VisaAppointmentChecker, "__init__", lambda self, *a, **k: None):
+            checker = VisaAppointmentChecker.__new__(VisaAppointmentChecker)
+        checker.cfg = cfg
+        checker._scheduling_limit_count = 0
+        checker._backoff_until = None
+        checker._prime_time_windows = [(6, 9), (12, 14)]
+        checker._availability_history = []
+        return checker
+
+    def _make_mock_driver(self, title: str):
+        mock_driver = MagicMock()
+        mock_driver.title = title
+        mock_driver.current_url = "https://ais.usvisa-info.com/en-ca/niv/schedule/12345/appointment"
+        return mock_driver
+
+    @patch("visa_appointment_checker.send_notification")
+    def test_handle_scheduling_limit_raises_captcha_error(self, mock_notify):
+        """_handle_scheduling_limit_warning must raise CaptchaDetectedError."""
+        from visa_appointment_checker import VisaAppointmentChecker, CaptchaDetectedError
+
+        checker = self._make_checker()
+        checker._scheduling_limit_count = 1
+        mock_driver = self._make_mock_driver("Scheduling Limit Warning | AIS")
+
+        with pytest.raises(CaptchaDetectedError):
+            checker._handle_scheduling_limit_warning(mock_driver)
+
+    @patch("visa_appointment_checker.send_notification")
+    def test_backoff_escalates_with_consecutive_hits(self, mock_notify):
+        """Each consecutive Scheduling Limit Warning should double the backoff."""
+        from visa_appointment_checker import VisaAppointmentChecker, CaptchaDetectedError
+
+        checker = self._make_checker()
+        mock_driver = self._make_mock_driver("Scheduling Limit Warning | AIS")
+
+        backoff_minutes = []
+        for i in range(1, 4):
+            checker._scheduling_limit_count = i
+            try:
+                checker._handle_scheduling_limit_warning(mock_driver)
+            except CaptchaDetectedError:
+                pass
+            remaining = (checker._backoff_until - datetime.now()).total_seconds() / 60
+            backoff_minutes.append(remaining)
+
+        # Each iteration should produce a longer (or equal, due to cap) backoff
+        assert backoff_minutes[1] > backoff_minutes[0], (
+            "Second hit should have a longer backoff than the first"
+        )
+        assert backoff_minutes[2] > backoff_minutes[1], (
+            "Third hit should have a longer backoff than the second"
+        )
+
+    @patch("visa_appointment_checker.send_notification")
+    def test_backoff_capped_at_120_minutes(self, mock_notify):
+        """Backoff must not exceed SCHEDULING_LIMIT_MAX_BACKOFF_MINUTES."""
+        from visa_appointment_checker import VisaAppointmentChecker, CaptchaDetectedError
+
+        checker = self._make_checker()
+        mock_driver = self._make_mock_driver("Scheduling Limit Warning | AIS")
+        checker._scheduling_limit_count = 100  # Very high consecutive count
+
+        try:
+            checker._handle_scheduling_limit_warning(mock_driver)
+        except CaptchaDetectedError:
+            pass
+
+        remaining_minutes = (checker._backoff_until - datetime.now()).total_seconds() / 60
+        cap = VisaAppointmentChecker.SCHEDULING_LIMIT_MAX_BACKOFF_MINUTES
+        assert remaining_minutes <= cap + 1, f"Backoff must be capped at {cap} minutes"
+
+    @patch("visa_appointment_checker.send_notification")
+    def test_notification_sent_on_first_occurrence(self, mock_notify):
+        """A notification must be sent on the first Scheduling Limit Warning."""
+        from visa_appointment_checker import VisaAppointmentChecker, CaptchaDetectedError
+
+        checker = self._make_checker()
+        mock_driver = self._make_mock_driver("Scheduling Limit Warning | AIS")
+        checker._scheduling_limit_count = 1
+
+        try:
+            checker._handle_scheduling_limit_warning(mock_driver)
+        except CaptchaDetectedError:
+            pass
+
+        mock_notify.assert_called_once()
+        subject = mock_notify.call_args[0][1]
+        assert "Scheduling Limit Warning" in subject
+
+    def test_ensure_on_appointment_form_returns_false_for_warning_page(self):
+        """_ensure_on_appointment_form must return False on Scheduling Limit Warning pages."""
+        from visa_appointment_checker import VisaAppointmentChecker
+
+        checker = self._make_checker()
+        mock_driver = MagicMock()
+        mock_driver.title = "Scheduling Limit Warning | Official U.S. Department of State"
+        mock_driver.current_url = "https://ais.usvisa-info.com/en-ca/niv/schedule/12345/appointment"
+        checker.driver = mock_driver
+        checker.ensure_driver = MagicMock(return_value=mock_driver)
+
+        result = checker._ensure_on_appointment_form()
+        assert result is False, (
+            "_ensure_on_appointment_form should return False on Scheduling Limit Warning page"
+        )

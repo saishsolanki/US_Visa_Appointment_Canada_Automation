@@ -708,6 +708,9 @@ class VisaAppointmentChecker:
         "Vancouver": "95",
     }
 
+    # Maximum backoff (minutes) applied when the Scheduling Limit Warning page is hit repeatedly
+    SCHEDULING_LIMIT_MAX_BACKOFF_MINUTES: int = 120
+
     def __init__(
         self,
         cfg: CheckerConfig,
@@ -770,6 +773,9 @@ class VisaAppointmentChecker:
         self._consecutive_network_errors = 0
         self._last_successful_network_time: Optional[datetime] = None
         self._network_backoff_until: Optional[datetime] = None
+
+        # Scheduling limit warning tracking
+        self._scheduling_limit_count = 0
 
         apply_selector_overrides(self.__class__, selectors_path)
         
@@ -1604,6 +1610,19 @@ class VisaAppointmentChecker:
                 # Capture comprehensive debug info when location selector is missing
                 self._capture_debug_state("missing_location_selector")
 
+                # If this is a Scheduling Limit Warning page, raise immediately so we
+                # avoid the 20-second widget wait in _check_consulate_availability and
+                # apply an appropriately long backoff.
+                try:
+                    title = (driver.title or "").lower()
+                    source = (driver.page_source or "").lower()
+                except Exception:  # noqa: BLE001
+                    title = ""
+                    source = ""
+                if "scheduling limit warning" in title or "scheduling limit warning" in source:
+                    self._scheduling_limit_count += 1
+                    self._handle_scheduling_limit_warning(driver)
+
     def _handle_group_continue(self) -> None:
         driver = self.ensure_driver()
 
@@ -1759,6 +1778,20 @@ class VisaAppointmentChecker:
         if not any(token in current_url for token in ("appointment", "schedule")):
             logging.debug("URL doesn't contain appointment/schedule: %s", driver.current_url)
             return False
+
+        # Detect Scheduling Limit Warning page — this is NOT a valid appointment form.
+        # AIS shows this page when too many scheduling attempts have been made; it requires
+        # human CAPTCHA intervention to proceed and cannot be automated past.
+        try:
+            title = (driver.title or "").lower()
+            if "scheduling limit warning" in title:
+                logging.warning(
+                    "Scheduling Limit Warning page detected at %s — not a valid appointment form",
+                    driver.current_url,
+                )
+                return False
+        except Exception:  # noqa: BLE001
+            pass
         
         start_time = datetime.now()
         
@@ -1964,11 +1997,17 @@ class VisaAppointmentChecker:
                 "too many requests",
             )
             if any(marker in title or marker in source for marker in scheduling_limit_markers):
-                self._schedule_backoff()
-                raise CaptchaDetectedError(
-                    "Scheduling limit warning detected - retry will be attempted after backoff"
-                )
+                self._scheduling_limit_count += 1
+                self._handle_scheduling_limit_warning(driver)
             return
+
+        # Widgets loaded successfully — clear any previous scheduling-limit streak
+        if self._scheduling_limit_count > 0:
+            logging.info(
+                "Scheduling Limit Warning cleared after %d consecutive occurrence(s); resuming normal checks",
+                self._scheduling_limit_count,
+            )
+            self._scheduling_limit_count = 0
 
         # Intelligent calendar polling with adaptive frequency
         if self._is_calendar_busy():
@@ -2878,6 +2917,53 @@ class VisaAppointmentChecker:
             raise CaptchaDetectedError(message)
 
         return False
+
+    def _handle_scheduling_limit_warning(self, driver: webdriver.Chrome) -> None:
+        """Handle the AIS 'Scheduling Limit Warning' page.
+
+        This page appears when too many scheduling attempts have been made.  It
+        contains a CAPTCHA that requires human intervention; the bot cannot
+        proceed past it automatically.  We apply an escalating backoff so that
+        repeated hits do not spam the server, and notify the user on the first
+        occurrence so they can solve the CAPTCHA manually.
+        """
+        consecutive = self._scheduling_limit_count
+
+        # Escalating backoff: 30 min base, doubled for each additional hit,
+        # capped at SCHEDULING_LIMIT_MAX_BACKOFF_MINUTES.
+        base_minutes = 30
+        backoff_minutes = min(
+            base_minutes * (2 ** (consecutive - 1)),
+            self.SCHEDULING_LIMIT_MAX_BACKOFF_MINUTES,
+        )
+        self._backoff_until = datetime.now() + timedelta(minutes=backoff_minutes)
+
+        logging.warning(
+            "Scheduling Limit Warning detected (consecutive count: %d); "
+            "human CAPTCHA intervention required. Next retry in %d minutes.",
+            consecutive,
+            backoff_minutes,
+        )
+
+        # Notify the user on the first occurrence (and every 3rd thereafter)
+        if consecutive == 1 or consecutive % 3 == 0:
+            send_notification(
+                self.cfg,
+                "⚠️ Scheduling Limit Warning — Manual Action Required",
+                (
+                    "The AIS portal is showing a 'Scheduling Limit Warning' page that "
+                    "requires you to solve a CAPTCHA before the bot can continue.\n\n"
+                    f"Please log in manually at {LOGIN_URL} and complete "
+                    "the CAPTCHA challenge on the scheduling page.\n\n"
+                    f"The bot will automatically retry in {backoff_minutes} minutes. "
+                    f"(This is consecutive occurrence #{consecutive}.)"
+                ),
+            )
+
+        raise CaptchaDetectedError(
+            f"Scheduling limit warning (#{consecutive}) — human CAPTCHA required; "
+            f"retry in {backoff_minutes} minutes"
+        )
 
     def _schedule_backoff(self) -> None:
         # Use adaptive frequency if available, otherwise fall back to configured frequency
