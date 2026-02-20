@@ -1,6 +1,27 @@
 import os
+import platform
 
 from selenium.webdriver.chrome.options import Options
+
+
+def _detect_host_os_ua() -> str:
+    """Return a Chrome UA string that matches the actual host OS platform."""
+    system = platform.system()
+    if system == "Darwin":
+        return (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        )
+    if system == "Windows":
+        return (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        )
+    # Linux / other
+    return (
+        "Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    )
 
 
 def build_chrome_options(*, headless: bool, mode: str = "balanced") -> Options:
@@ -43,11 +64,7 @@ def build_chrome_options(*, headless: bool, mode: str = "balanced") -> Options:
     }
     options.add_experimental_option("prefs", prefs)
 
-    user_agent = os.getenv(
-        "CHECKER_USER_AGENT",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
-    )
+    user_agent = os.getenv("CHECKER_USER_AGENT") or _detect_host_os_ua()
     options.add_argument(f"--user-agent={user_agent}")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
