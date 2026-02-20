@@ -14,8 +14,20 @@ else
     echo "Running with system Python..."
 fi
 
+# Resolve Python interpreter robustly
+if [ -x "$DIR/venv/bin/python" ]; then
+    PYTHON_BIN="$DIR/venv/bin/python"
+elif command -v python3 &> /dev/null; then
+    PYTHON_BIN="python3"
+elif command -v python &> /dev/null; then
+    PYTHON_BIN="python"
+else
+    echo "Error: No Python interpreter found (python3/python)."
+    exit 127
+fi
+
 # Run the visa checker with all arguments
-python "$DIR/visa_appointment_checker.py" "$@"
+"$PYTHON_BIN" "$DIR/visa_appointment_checker.py" "$@"
 
 # Deactivate virtual environment if it was activated
 if command -v deactivate &> /dev/null; then

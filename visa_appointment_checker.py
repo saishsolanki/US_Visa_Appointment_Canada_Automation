@@ -1945,6 +1945,29 @@ class VisaAppointmentChecker:
             logging.warning("Consular appointment widgets did not load within the expected time window")
             # Capture comprehensive debug info when widgets don't load
             self._capture_debug_state("widgets_not_loaded")
+
+            # If anti-bot controls or scheduling-limit gates are shown, treat this
+            # as a blocking condition (not a successful availability check).
+            self._detect_captcha()
+
+            try:
+                title = (driver.title or "").lower()
+                source = (driver.page_source or "").lower()
+            except Exception:  # noqa: BLE001
+                title = ""
+                source = ""
+
+            scheduling_limit_markers = (
+                "scheduling limit warning",
+                "error message",
+                "please try again later",
+                "too many requests",
+            )
+            if any(marker in title or marker in source for marker in scheduling_limit_markers):
+                self._schedule_backoff()
+                raise CaptchaDetectedError(
+                    "Scheduling limit warning detected - retry will be attempted after backoff"
+                )
             return
 
         # Intelligent calendar polling with adaptive frequency

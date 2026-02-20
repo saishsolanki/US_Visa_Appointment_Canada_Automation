@@ -5,11 +5,10 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 LOG_DIR = Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
 LOG_PATH = LOG_DIR / "visa_checker.log"
 
 ARTIFACTS_DIR = Path("artifacts")
-ARTIFACTS_DIR.mkdir(exist_ok=True)
+FALLBACK_BASE_DIR = Path.home() / ".local" / "state" / "visa_checker"
 
 NOISY_LOGGERS = [
     "selenium",
@@ -36,7 +35,24 @@ class JsonLogFormatter(logging.Formatter):
 def configure_logging(*, debug: bool = False, json_logs: bool = False) -> None:
     level = logging.DEBUG if debug else logging.INFO
     stream_handler = logging.StreamHandler()
-    file_handler = RotatingFileHandler(LOG_PATH, maxBytes=5 * 1024 * 1024, backupCount=5)
+    file_handler: logging.Handler
+    log_path = LOG_PATH
+
+    try:
+        LOG_DIR.mkdir(exist_ok=True)
+        ARTIFACTS_DIR.mkdir(exist_ok=True)
+        file_handler = RotatingFileHandler(log_path, maxBytes=5 * 1024 * 1024, backupCount=5)
+    except OSError:
+        fallback_log_dir = FALLBACK_BASE_DIR / "logs"
+        fallback_artifacts_dir = FALLBACK_BASE_DIR / "artifacts"
+        fallback_log_dir.mkdir(parents=True, exist_ok=True)
+        fallback_artifacts_dir.mkdir(parents=True, exist_ok=True)
+        globals()["LOG_DIR"] = fallback_log_dir
+        globals()["LOG_PATH"] = fallback_log_dir / "visa_checker.log"
+        globals()["ARTIFACTS_DIR"] = fallback_artifacts_dir
+        log_path = globals()["LOG_PATH"]
+        file_handler = RotatingFileHandler(log_path, maxBytes=5 * 1024 * 1024, backupCount=5)
+
     handlers = [file_handler, stream_handler]
 
     if json_logs:
