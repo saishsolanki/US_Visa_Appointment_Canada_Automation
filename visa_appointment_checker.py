@@ -44,7 +44,6 @@ from webdriver_manager.chrome import ChromeDriverManager
 from browser_session import build_chrome_options
 from config_wizard import run_cli_setup_wizard as run_cli_setup_wizard_external
 from logging_utils import LOG_PATH, ARTIFACTS_DIR, configure_logging
-from notification_utils import send_notification as send_notification_external
 from notification_utils import send_all_notifications
 from scheduling_utils import compute_sleep_seconds as compute_sleep_seconds_external
 from selector_registry import apply_selector_overrides
@@ -2231,12 +2230,6 @@ class VisaAppointmentChecker:
 
             # ---- Dedup via slot ledger ----
             slot_key = earliest.strftime("%Y-%m-%d")
-            is_new = not self._slot_ledger.is_known(slot_key, self.cfg.location)
-            # record_slot above already inserted, so is_known is true now;
-            # we use a flag set *before* the insert loop would have run.
-            # Since record_slot returns True only on first insert, we re-check:
-            # The slot was recorded above, but we want to know if the notification
-            # was already sent. We always notify for the *earliest* date.
             
             logging.info("🎉 EARLIER APPOINTMENT FOUND! %s (%.0f days earlier than current)", 
                         earliest.strftime("%Y-%m-%d"), days_earlier)
@@ -2360,7 +2353,6 @@ class VisaAppointmentChecker:
           giving the user time to intervene.
         * ``min_improvement_days`` — already enforced by caller.
         """
-        driver = self.ensure_driver()
         dry = self.cfg.auto_book_dry_run
         tag = "[DRY-RUN] " if dry else ""
 
@@ -3378,7 +3370,7 @@ def main() -> None:
         print(f"   Dry-run: {'Yes' if cfg.auto_book_dry_run else 'No'} | Preferred time: {cfg.preferred_time}")
     print(f"⏰ Timezone: {cfg.timezone}")
     print(f"🕶️ Headless mode: {'On' if headless else 'Off'}")
-    print(f"🔄 Config hot-reload: Enabled")
+    print("🔄 Config hot-reload: Enabled")
     print("=" * 55)
 
     logging.info("Configuration summary: %s", cfg.masked_summary())
