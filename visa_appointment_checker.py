@@ -720,6 +720,18 @@ class VisaAppointmentChecker:
     # Maximum backoff (minutes) applied when the Scheduling Limit Warning page is hit repeatedly
     SCHEDULING_LIMIT_MAX_BACKOFF_MINUTES: int = 120
 
+    # Selectors for the Continue acknowledgment button on the Scheduling Limit Warning page
+    WARNING_CONTINUE_SELECTORS: List[Selector] = [
+        (By.CSS_SELECTOR, "a.button.primary[href*='appointment']"),
+        (By.CSS_SELECTOR, "input[type='submit'][value='Continue']"),
+        (By.XPATH, "//input[@type='submit' and contains(@value, 'Continue')]"),
+        (
+            By.XPATH,
+            "//a[contains(@class, 'button') and contains("
+            "translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'continue')]",
+        ),
+    ]
+
     def __init__(
         self,
         cfg: CheckerConfig,
@@ -770,6 +782,7 @@ class VisaAppointmentChecker:
 
         # Rate tracking (P2.5)
         self._request_timestamps: List[datetime] = []
+        self._ui_nav_timestamps: List[datetime] = []
 
         # Config hot-reload (P3.2)
         self._config_mtime: Optional[float] = None
@@ -785,6 +798,11 @@ class VisaAppointmentChecker:
 
         # Scheduling limit warning tracking
         self._scheduling_limit_count = 0
+        # Observability counters (Phase 5)
+        self._warning_page_hits = 0
+        self._continue_success_count = 0
+        self._api_check_count = 0
+        self._ui_check_count = 0
 
         apply_selector_overrides(self.__class__, selectors_path)
         
@@ -1244,13 +1262,27 @@ class VisaAppointmentChecker:
     def _api_check_all_locations(self) -> Dict[str, List[str]]:
         """Check all facility locations via API in parallel.
 
+        Locations are ordered by historical slot volume (slot_ledger priority
+        scoring) so that the most productive locations are checked first.
+
         Returns dict of {location_name: [date_strings]} for locations with
         available dates.
         """
         if not self._schedule_id:
             return {}
 
-        facilities = dict(self.FACILITY_ID_MAP)
+        # Pre-compute scores to avoid repeated DB calls during sort.
+        scores: Dict[str, float] = {
+            name: self._slot_ledger.location_score(name)
+            for name in self.FACILITY_ID_MAP
+        }
+        # Sort facilities by location_score descending so high-yield locations
+        # are submitted to the thread pool first.
+        facilities_sorted = sorted(
+            self.FACILITY_ID_MAP.items(),
+            key=lambda item: scores[item[0]],
+            reverse=True,
+        )
         results: Dict[str, List[str]] = {}
 
         def _check_one(name_id_pair):
@@ -1258,8 +1290,8 @@ class VisaAppointmentChecker:
             dates = self._api_check_dates(fid)
             return name, dates
 
-        with ThreadPoolExecutor(max_workers=min(4, len(facilities))) as pool:
-            futures = {pool.submit(_check_one, item): item for item in facilities.items()}
+        with ThreadPoolExecutor(max_workers=min(4, len(facilities_sorted))) as pool:
+            futures = {pool.submit(_check_one, item): item for item in facilities_sorted}
             for future in as_completed(futures, timeout=30):
                 try:
                     name, dates = future.result()
@@ -1306,6 +1338,15 @@ class VisaAppointmentChecker:
         best_location = min(best_by_location, key=lambda loc: best_by_location[loc])
         best_date = best_by_location[best_location]
         days_earlier = (current_date - best_date).days
+        slot_key = best_date.strftime("%Y-%m-%d")
+
+        # Suppress duplicate notifications for the same slot (Phase 4)
+        if self._slot_ledger.is_notified(slot_key, best_location, ttl_hours=self.cfg.slot_ttl_hours):
+            logging.debug(
+                "Skipping duplicate notification for %s @ %s (already notified within %dh TTL)",
+                slot_key, best_location, self.cfg.slot_ttl_hours,
+            )
+            return
 
         logging.info("🎉 API SCAN: Earlier appointment at %s: %s (%d days earlier)",
                      best_location, best_date.strftime("%Y-%m-%d"), days_earlier)
@@ -1331,7 +1372,6 @@ class VisaAppointmentChecker:
         )
         send_notification(self.cfg, subject, message)
 
-        slot_key = best_date.strftime("%Y-%m-%d")
         self._slot_ledger.mark_notified(slot_key, best_location)
 
     def _try_api_fast_check(self) -> bool:
@@ -1359,17 +1399,41 @@ class VisaAppointmentChecker:
         self._request_timestamps.append(now)
         cutoff = now - timedelta(hours=1)
         self._request_timestamps = [t for t in self._request_timestamps if t > cutoff]
+        self._api_check_count += 1
+
+    def _record_ui_navigation(self) -> None:
+        """Record a UI navigation for rate limiting and observability."""
+        now = self._now()
+        self._ui_nav_timestamps.append(now)
+        cutoff = now - timedelta(hours=1)
+        self._ui_nav_timestamps = [t for t in self._ui_nav_timestamps if t > cutoff]
+        self._ui_check_count += 1
 
     def _should_throttle(self) -> bool:
-        """Check if we should throttle API requests."""
-        if self.cfg.max_requests_per_hour <= 0:
+        """Check if we should throttle API requests (uses API-specific budget)."""
+        limit = self.cfg.max_api_requests_per_hour
+        if limit <= 0:
             return False
         now = self._now()
         cutoff = now - timedelta(hours=1)
         recent = sum(1 for t in self._request_timestamps if t > cutoff)
-        if recent >= self.cfg.max_requests_per_hour:
-            logging.debug("Rate limit: %d requests in the last hour (max: %d)",
-                          recent, self.cfg.max_requests_per_hour)
+        if recent >= limit:
+            logging.debug("API rate limit: %d requests in the last hour (max: %d)",
+                          recent, limit)
+            return True
+        return False
+
+    def _should_throttle_ui(self) -> bool:
+        """Check if we should throttle UI navigations."""
+        limit = self.cfg.max_ui_navigations_per_hour
+        if limit <= 0:
+            return False
+        now = self._now()
+        cutoff = now - timedelta(hours=1)
+        recent = sum(1 for t in self._ui_nav_timestamps if t > cutoff)
+        if recent >= limit:
+            logging.debug("UI rate limit: %d navigations in the last hour (max: %d)",
+                          recent, limit)
             return True
         return False
 
@@ -1438,6 +1502,9 @@ class VisaAppointmentChecker:
                     return
             else:
                 logging.debug("API fast-path found nothing; falling back to browser")
+
+        # Record this as a UI navigation cycle
+        self._record_ui_navigation()
 
         driver = self.ensure_driver()
         
@@ -2920,15 +2987,57 @@ class VisaAppointmentChecker:
 
         return False
 
+    def _try_warning_continue(self, driver: webdriver.Chrome) -> bool:
+        """Attempt to click the Continue acknowledgment button on the Scheduling Limit Warning page.
+
+        Returns True if the button was found and clicked successfully.
+        """
+        for selector_by, selector_val in self.WARNING_CONTINUE_SELECTORS:
+            try:
+                el = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((selector_by, selector_val))
+                )
+                el.click()
+                logging.info("Scheduling Limit Warning: clicked Continue acknowledgment button")
+                try:
+                    self._wait_for_page_ready(driver)
+                except Exception as exc:  # noqa: BLE001
+                    logging.debug("_wait_for_page_ready after Continue click raised: %s", exc)
+                return True
+            except (TimeoutException, NoSuchElementException, ElementClickInterceptedException,
+                    ElementNotInteractableException, StaleElementReferenceException, WebDriverException) as exc:
+                logging.debug(
+                    "WARNING_CONTINUE selector (%s, %r) not usable: %s",
+                    selector_by, selector_val, exc,
+                )
+                continue
+        logging.debug("No Continue button found on Scheduling Limit Warning page")
+        return False
+
     def _handle_scheduling_limit_warning(self, driver: webdriver.Chrome) -> None:
         """Handle the AIS 'Scheduling Limit Warning' page.
 
-        This page appears when too many scheduling attempts have been made.  It
-        contains a CAPTCHA that requires human intervention; the bot cannot
-        proceed past it automatically.  We apply an escalating backoff so that
-        repeated hits do not spam the server, and notify the user on the first
-        occurrence so they can solve the CAPTCHA manually.
+        First attempts the official Continue acknowledgment path.  If Continue
+        is available and clickable, we acknowledge the warning and let the
+        normal flow resume (no raise).  Only when Continue is unavailable or
+        the warning persists in a loop do we apply escalating backoff and raise
+        CaptchaDetectedError to require human intervention.
         """
+        self._warning_page_hits += 1
+
+        # --- Phase 1: try the official Continue acknowledgment path first ---
+        if self._try_warning_continue(driver):
+            self._continue_success_count += 1
+            logging.info(
+                "Scheduling Limit Warning acknowledged via Continue (hit #%d, "
+                "success #%d); resuming normal flow.",
+                self._warning_page_hits,
+                self._continue_success_count,
+            )
+            return  # Do NOT raise; let the caller proceed normally.
+
+        # Continue was not available — escalate with backoff.
+        self._scheduling_limit_count += 1
         consecutive = self._scheduling_limit_count
 
         # Escalating backoff: 30 min base, doubled for each additional hit,
@@ -2942,7 +3051,7 @@ class VisaAppointmentChecker:
 
         logging.warning(
             "Scheduling Limit Warning detected (consecutive count: %d); "
-            "human CAPTCHA intervention required. Next retry in %d minutes.",
+            "Continue unavailable — human CAPTCHA intervention required. Next retry in %d minutes.",
             consecutive,
             backoff_minutes,
         )
@@ -3127,9 +3236,25 @@ class VisaAppointmentChecker:
         if not self._heartbeat_path:
             return
 
+        api_total = self._api_check_count
+        ui_total = self._ui_check_count
         payload = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "status": status,
+            "warning_page_hits": self._warning_page_hits,
+            "continue_success_count": self._continue_success_count,
+            "continue_success_rate": (
+                round(self._continue_success_count / self._warning_page_hits, 3)
+                if self._warning_page_hits > 0
+                else None
+            ),
+            "api_checks": api_total,
+            "ui_checks": ui_total,
+            "api_vs_ui_ratio": (
+                round(api_total / (api_total + ui_total), 3)
+                if (api_total + ui_total) > 0
+                else None
+            ),
         }
 
         try:

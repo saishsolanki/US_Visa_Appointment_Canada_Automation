@@ -79,6 +79,8 @@ def _make_config(**overrides):  # type: ignore[override]
         webhook_url="",
         preferred_time="any",
         max_requests_per_hour=120,
+        max_api_requests_per_hour=120,
+        max_ui_navigations_per_hour=60,
         slot_ttl_hours=24,
     )
     defaults.update(overrides)
@@ -617,11 +619,12 @@ class TestRateTracking:
 
     def _make_checker(self, max_rph=10):
         from visa_appointment_checker import VisaAppointmentChecker
-        cfg = _make_config(max_requests_per_hour=max_rph)
+        cfg = _make_config(max_requests_per_hour=max_rph, max_api_requests_per_hour=max_rph)
         with patch.object(VisaAppointmentChecker, "__init__", lambda self, *a, **k: None):
             checker = VisaAppointmentChecker.__new__(VisaAppointmentChecker)
         checker.cfg = cfg
         checker._request_timestamps = []
+        checker._api_check_count = 0
         return checker
 
     def test_not_throttled_initially(self):
@@ -743,6 +746,8 @@ class TestSchedulingLimitWarning:
             checker = VisaAppointmentChecker.__new__(VisaAppointmentChecker)
         checker.cfg = cfg
         checker._scheduling_limit_count = 0
+        checker._warning_page_hits = 0
+        checker._continue_success_count = 0
         checker._backoff_until = None
         checker._prime_time_windows = [(6, 9), (12, 14)]
         checker._availability_history = []
@@ -756,15 +761,16 @@ class TestSchedulingLimitWarning:
 
     @patch("visa_appointment_checker.send_notification")
     def test_handle_scheduling_limit_raises_captcha_error(self, mock_notify):
-        """_handle_scheduling_limit_warning must raise CaptchaDetectedError."""
-        from visa_appointment_checker import CaptchaDetectedError
+        """_handle_scheduling_limit_warning must raise CaptchaDetectedError when Continue fails."""
+        from visa_appointment_checker import VisaAppointmentChecker, CaptchaDetectedError
 
         checker = self._make_checker()
         checker._scheduling_limit_count = 1
         mock_driver = self._make_mock_driver("Scheduling Limit Warning | AIS")
 
-        with pytest.raises(CaptchaDetectedError):
-            checker._handle_scheduling_limit_warning(mock_driver)
+        with patch.object(checker, "_try_warning_continue", return_value=False):
+            with pytest.raises(CaptchaDetectedError):
+                checker._handle_scheduling_limit_warning(mock_driver)
 
     @patch("visa_appointment_checker.send_notification")
     def test_backoff_escalates_with_consecutive_hits(self, mock_notify):
@@ -777,10 +783,11 @@ class TestSchedulingLimitWarning:
         backoff_minutes = []
         for i in range(1, 4):
             checker._scheduling_limit_count = i
-            try:
-                checker._handle_scheduling_limit_warning(mock_driver)
-            except CaptchaDetectedError:
-                pass
+            with patch.object(checker, "_try_warning_continue", return_value=False):
+                try:
+                    checker._handle_scheduling_limit_warning(mock_driver)
+                except CaptchaDetectedError:
+                    pass
             remaining = (checker._backoff_until - datetime.now()).total_seconds() / 60
             backoff_minutes.append(remaining)
 
@@ -801,10 +808,11 @@ class TestSchedulingLimitWarning:
         mock_driver = self._make_mock_driver("Scheduling Limit Warning | AIS")
         checker._scheduling_limit_count = 100  # Very high consecutive count
 
-        try:
-            checker._handle_scheduling_limit_warning(mock_driver)
-        except CaptchaDetectedError:
-            pass
+        with patch.object(checker, "_try_warning_continue", return_value=False):
+            try:
+                checker._handle_scheduling_limit_warning(mock_driver)
+            except CaptchaDetectedError:
+                pass
 
         remaining_minutes = (checker._backoff_until - datetime.now()).total_seconds() / 60
         cap = VisaAppointmentChecker.SCHEDULING_LIMIT_MAX_BACKOFF_MINUTES
@@ -812,17 +820,19 @@ class TestSchedulingLimitWarning:
 
     @patch("visa_appointment_checker.send_notification")
     def test_notification_sent_on_first_occurrence(self, mock_notify):
-        """A notification must be sent on the first Scheduling Limit Warning."""
-        from visa_appointment_checker import CaptchaDetectedError
+        """A notification must be sent on the first Scheduling Limit Warning (consecutive=1)."""
+        from visa_appointment_checker import VisaAppointmentChecker, CaptchaDetectedError
 
         checker = self._make_checker()
         mock_driver = self._make_mock_driver("Scheduling Limit Warning | AIS")
-        checker._scheduling_limit_count = 1
+        # Start at 0 so the handler increments it to 1 (first occurrence)
+        checker._scheduling_limit_count = 0
 
-        try:
-            checker._handle_scheduling_limit_warning(mock_driver)
-        except CaptchaDetectedError:
-            pass
+        with patch.object(checker, "_try_warning_continue", return_value=False):
+            try:
+                checker._handle_scheduling_limit_warning(mock_driver)
+            except CaptchaDetectedError:
+                pass
 
         mock_notify.assert_called_once()
         subject = mock_notify.call_args[0][1]
@@ -841,3 +851,277 @@ class TestSchedulingLimitWarning:
         assert result is False, (
             "_ensure_on_appointment_form should return False on Scheduling Limit Warning page"
         )
+
+    # ------------------------------------------------------------------
+    # Phase 1: Continue acknowledgment path (new tests)
+    # ------------------------------------------------------------------
+
+    def test_continue_path_no_raise_when_button_found(self):
+        """When Continue is clicked successfully, no exception must be raised."""
+        from visa_appointment_checker import VisaAppointmentChecker
+
+        checker = self._make_checker()
+        mock_driver = self._make_mock_driver("Scheduling Limit Warning | AIS")
+
+        with patch.object(checker, "_try_warning_continue", return_value=True):
+            # Should NOT raise — Continue was acknowledged
+            checker._handle_scheduling_limit_warning(mock_driver)
+
+    def test_continue_path_increments_continue_success_count(self):
+        """A successful Continue click must increment _continue_success_count."""
+        from visa_appointment_checker import VisaAppointmentChecker
+
+        checker = self._make_checker()
+        mock_driver = self._make_mock_driver("Scheduling Limit Warning | AIS")
+
+        assert checker._continue_success_count == 0
+        with patch.object(checker, "_try_warning_continue", return_value=True):
+            checker._handle_scheduling_limit_warning(mock_driver)
+        assert checker._continue_success_count == 1
+
+    def test_warning_page_hits_always_incremented(self):
+        """_warning_page_hits must be incremented regardless of Continue outcome."""
+        from visa_appointment_checker import VisaAppointmentChecker, CaptchaDetectedError
+
+        checker = self._make_checker()
+        mock_driver = self._make_mock_driver("Scheduling Limit Warning | AIS")
+
+        # Continue succeeds
+        with patch.object(checker, "_try_warning_continue", return_value=True):
+            checker._handle_scheduling_limit_warning(mock_driver)
+        assert checker._warning_page_hits == 1
+
+        # Continue fails
+        with patch.object(checker, "_try_warning_continue", return_value=False):
+            try:
+                checker._handle_scheduling_limit_warning(mock_driver)
+            except CaptchaDetectedError:
+                pass
+        assert checker._warning_page_hits == 2
+
+    def test_scheduling_limit_count_not_incremented_on_continue_success(self):
+        """_scheduling_limit_count must NOT increase when Continue succeeds."""
+        from visa_appointment_checker import VisaAppointmentChecker
+
+        checker = self._make_checker()
+        mock_driver = self._make_mock_driver("Scheduling Limit Warning | AIS")
+
+        with patch.object(checker, "_try_warning_continue", return_value=True):
+            checker._handle_scheduling_limit_warning(mock_driver)
+        assert checker._scheduling_limit_count == 0
+
+    @patch("visa_appointment_checker.send_notification")
+    def test_no_notification_when_continue_succeeds(self, mock_notify):
+        """No notification should be sent when Continue is successfully clicked."""
+        from visa_appointment_checker import VisaAppointmentChecker
+
+        checker = self._make_checker()
+        mock_driver = self._make_mock_driver("Scheduling Limit Warning | AIS")
+
+        with patch.object(checker, "_try_warning_continue", return_value=True):
+            checker._handle_scheduling_limit_warning(mock_driver)
+        mock_notify.assert_not_called()
+
+
+# =========================================================================
+# 17. Observability counters in heartbeat
+# =========================================================================
+
+class TestHeartbeatCounters:
+    """Verify that warning / API / UI counters appear in the heartbeat payload."""
+
+    def _make_checker(self):
+        from visa_appointment_checker import VisaAppointmentChecker
+        import tempfile
+        from pathlib import Path
+
+        cfg = _make_config()
+        with patch.object(VisaAppointmentChecker, "__init__", lambda self, *a, **k: None):
+            checker = VisaAppointmentChecker.__new__(VisaAppointmentChecker)
+        checker.cfg = cfg
+
+        # Use mkstemp to avoid the race-condition security issue with mktemp
+        fd, tmp = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        checker._heartbeat_path = Path(tmp)
+
+        checker._warning_page_hits = 3
+        checker._continue_success_count = 2
+        checker._api_check_count = 10
+        checker._ui_check_count = 5
+        return checker
+
+    def test_heartbeat_includes_warning_counters(self):
+        """_update_heartbeat must write warning_page_hits and related counters."""
+        import json
+
+        checker = self._make_checker()
+        checker._update_heartbeat("success")
+
+        payload = json.loads(checker._heartbeat_path.read_text())
+        assert payload["warning_page_hits"] == 3
+        assert payload["continue_success_count"] == 2
+        assert payload["continue_success_rate"] == round(2 / 3, 3)
+
+    def test_heartbeat_includes_api_ui_ratio(self):
+        """_update_heartbeat must include api_checks, ui_checks, and api_vs_ui_ratio."""
+        import json
+
+        checker = self._make_checker()
+        checker._update_heartbeat("success")
+
+        payload = json.loads(checker._heartbeat_path.read_text())
+        assert payload["api_checks"] == 10
+        assert payload["ui_checks"] == 5
+        assert payload["api_vs_ui_ratio"] == round(10 / 15, 3)
+
+    def test_heartbeat_ratio_none_when_no_checks(self):
+        """api_vs_ui_ratio must be None when no checks have been recorded yet."""
+        import json
+
+        checker = self._make_checker()
+        checker._api_check_count = 0
+        checker._ui_check_count = 0
+        checker._update_heartbeat("success")
+
+        payload = json.loads(checker._heartbeat_path.read_text())
+        assert payload["api_vs_ui_ratio"] is None
+
+
+# =========================================================================
+# 18. Location priority ordering (Phase 3)
+# =========================================================================
+
+class TestLocationPriorityOrdering:
+    """Verify that _api_check_all_locations respects slot_ledger scores."""
+
+    def _make_checker(self):
+        from visa_appointment_checker import VisaAppointmentChecker
+
+        cfg = _make_config()
+        with patch.object(VisaAppointmentChecker, "__init__", lambda self, *a, **k: None):
+            checker = VisaAppointmentChecker.__new__(VisaAppointmentChecker)
+        checker.cfg = cfg
+        checker._schedule_id = "12345"
+        checker._request_timestamps = []
+        return checker
+
+    def test_high_score_location_checked_first(self):
+        """The location with the highest ledger score should appear first in checks."""
+        from unittest.mock import MagicMock, call
+
+        checker = self._make_checker()
+
+        mock_ledger = MagicMock()
+        # Vancouver has highest score, Ottawa second, others zero
+        mock_ledger.location_score.side_effect = lambda loc: {
+            "Vancouver": 10.0, "Ottawa": 5.0
+        }.get(loc, 0.0)
+        checker._slot_ledger = mock_ledger
+
+        checked_order = []
+
+        def _fake_api_check(fid):
+            # find location name by fid
+            for name, f in checker.FACILITY_ID_MAP.items():
+                if f == fid:
+                    checked_order.append(name)
+            return None
+
+        with patch.object(checker, "_api_check_dates", side_effect=_fake_api_check):
+            with patch.object(checker, "_should_throttle", return_value=False):
+                checker._api_check_all_locations()
+
+        assert checked_order.index("Vancouver") < checked_order.index("Ottawa"), (
+            "Vancouver (higher score) should be checked before Ottawa"
+        )
+
+
+# =========================================================================
+# 19. Notification deduplication via slot_ledger (Phase 4)
+# =========================================================================
+
+class TestNotificationDedupe:
+    """Verify that _evaluate_api_results suppresses duplicate same-slot notifications."""
+
+    def _make_checker(self):
+        from visa_appointment_checker import VisaAppointmentChecker
+
+        cfg = _make_config(
+            current_appointment_date="2025-12-01",
+            start_date="2025-06-01",
+            end_date="2025-11-30",
+            min_improvement_days=7,
+            slot_ttl_hours=24,
+        )
+        with patch.object(VisaAppointmentChecker, "__init__", lambda self, *a, **k: None):
+            checker = VisaAppointmentChecker.__new__(VisaAppointmentChecker)
+        checker.cfg = cfg
+        checker._availability_history = []
+        return checker
+
+    @patch("visa_appointment_checker.send_notification")
+    def test_notification_suppressed_for_already_notified_slot(self, mock_notify):
+        """No notification must be sent when the best slot is already in the ledger."""
+        checker = self._make_checker()
+
+        mock_ledger = MagicMock()
+        mock_ledger.record_slot.return_value = False  # duplicate
+        mock_ledger.is_notified.return_value = True   # already notified
+        checker._slot_ledger = mock_ledger
+
+        results = {"Ottawa": ["2025-09-01"]}
+        checker._evaluate_api_results(results)
+        mock_notify.assert_not_called()
+
+    @patch("visa_appointment_checker.send_notification")
+    def test_notification_sent_for_new_slot(self, mock_notify):
+        """A notification must be sent when the best slot has not been notified yet."""
+        checker = self._make_checker()
+
+        mock_ledger = MagicMock()
+        mock_ledger.record_slot.return_value = True   # new slot
+        mock_ledger.is_notified.return_value = False  # not yet notified
+        checker._slot_ledger = mock_ledger
+
+        with patch.object(checker, "_record_availability_event", return_value=None):
+            results = {"Ottawa": ["2025-09-01"]}
+            checker._evaluate_api_results(results)
+        mock_notify.assert_called_once()
+
+
+# =========================================================================
+# 20. OS-aware User-Agent (Phase 2)
+# =========================================================================
+
+class TestOsAwareUserAgent:
+    """Verify that build_chrome_options picks a UA matching the host OS."""
+
+    def test_linux_ua_contains_x11(self):
+        from browser_session import _detect_host_os_ua
+        with patch("browser_session.platform.system", return_value="Linux"):
+            ua = _detect_host_os_ua()
+        assert "X11" in ua, "Linux UA must contain X11 platform identifier"
+
+    def test_mac_ua_contains_macintosh(self):
+        from browser_session import _detect_host_os_ua
+        with patch("browser_session.platform.system", return_value="Darwin"):
+            ua = _detect_host_os_ua()
+        assert "Macintosh" in ua, "macOS UA must contain Macintosh identifier"
+
+    def test_windows_ua_contains_windows_nt(self):
+        from browser_session import _detect_host_os_ua
+        with patch("browser_session.platform.system", return_value="Windows"):
+            ua = _detect_host_os_ua()
+        assert "Windows NT" in ua, "Windows UA must contain Windows NT identifier"
+
+    def test_env_override_takes_precedence(self):
+        """CHECKER_USER_AGENT env var must override the OS-detected UA."""
+        from browser_session import build_chrome_options
+
+        custom_ua = "CustomAgent/1.0"
+        with patch.dict("os.environ", {"CHECKER_USER_AGENT": custom_ua}):
+            opts = build_chrome_options(headless=False)
+        ua_args = [a for a in opts.arguments if "--user-agent=" in a]
+        assert len(ua_args) == 1
+        assert custom_ua in ua_args[0]
