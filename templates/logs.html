@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Logs – US Visa Checker</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0d1117;
+            color: #c9d1d9;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        header {
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+            padding: 0.75rem 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        header h1 { font-size: 1.1rem; color: #58a6ff; flex: 1; }
+        .status-dot {
+            width: 10px; height: 10px; border-radius: 50%;
+            background: #3fb950; display: inline-block;
+            animation: pulse 1.5s infinite;
+        }
+        .status-dot.disconnected { background: #f85149; animation: none; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+        nav a {
+            color: #58a6ff;
+            text-decoration: none;
+            font-size: 0.9rem;
+            padding: 0.3rem 0.6rem;
+            border-radius: 5px;
+            border: 1px solid #30363d;
+        }
+        nav a:hover { background: #21262d; }
+        .toolbar {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.5rem 1.25rem;
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+            flex-wrap: wrap;
+        }
+        .toolbar label { font-size: 0.85rem; color: #8b949e; }
+        .toolbar input[type=checkbox] { cursor: pointer; }
+        button.clear-btn {
+            margin-left: auto;
+            padding: 0.3rem 0.8rem;
+            background: #21262d;
+            color: #c9d1d9;
+            border: 1px solid #30363d;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+        button.clear-btn:hover { background: #30363d; }
+        #log-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 0.75rem 1.25rem;
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+            font-size: 0.82rem;
+            line-height: 1.6;
+            background: #0d1117;
+        }
+        .log-line { white-space: pre-wrap; word-break: break-all; }
+        .log-line.ERROR   { color: #f85149; }
+        .log-line.WARNING { color: #d29922; }
+        .log-line.INFO    { color: #c9d1d9; }
+        .log-line.DEBUG   { color: #8b949e; }
+        .log-line.CRITICAL { color: #f85149; font-weight: bold; }
+        .log-line.found   { color: #3fb950; font-weight: bold; }
+        footer {
+            background: #161b22;
+            border-top: 1px solid #30363d;
+            padding: 0.4rem 1.25rem;
+            font-size: 0.78rem;
+            color: #8b949e;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        #line-count { margin-left: auto; }
+    </style>
+</head>
+<body>
+<header>
+    <span class="status-dot" id="status-dot" title="Connecting…"></span>
+    <h1>📋 Live Log Viewer</h1>
+    <nav>
+        <a href="/">⚙️ Config</a>
+        <a href="/analytics">📊 Analytics</a>
+        <a href="/update">🔄 Update</a>
+    </nav>
+</header>
+<div class="toolbar">
+    <label><input type="checkbox" id="autoscroll" checked> Auto-scroll</label>
+    <label><input type="checkbox" id="filter-debug"> Hide DEBUG</label>
+    <label>
+        <input type="text" id="search-filter" placeholder="Filter…"
+            style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:2px 6px;font-size:0.82rem;width:160px;">
+    </label>
+    <button class="clear-btn" id="clear-btn">🗑 Clear screen</button>
+</div>
+<div id="log-container"></div>
+<footer>
+    <span id="status-text">Connecting…</span>
+    <span id="line-count">0 lines</span>
+</footer>
+
+<script>
+(function () {
+    const container = document.getElementById('log-container');
+    const statusDot  = document.getElementById('status-dot');
+    const statusText = document.getElementById('status-text');
+    const lineCount  = document.getElementById('line-count');
+    const autoScroll = document.getElementById('autoscroll');
+    const filterDebug = document.getElementById('filter-debug');
+    const searchFilter = document.getElementById('search-filter');
+    const clearBtn   = document.getElementById('clear-btn');
+
+    let count = 0;
+
+    function levelClass(text) {
+        if (/\bCRITICAL\b/.test(text)) return 'CRITICAL';
+        if (/\bERROR\b/.test(text))    return 'ERROR';
+        if (/\bWARNING\b/.test(text))  return 'WARNING';
+        if (/\bDEBUG\b/.test(text))    return 'DEBUG';
+        if (/slot|found|available|booked/i.test(text)) return 'found';
+        return 'INFO';
+    }
+
+    function shouldShow(text) {
+        if (filterDebug.checked && /\bDEBUG\b/.test(text)) return false;
+        const q = searchFilter.value.trim();
+        if (q && !text.toLowerCase().includes(q.toLowerCase())) return false;
+        return true;
+    }
+
+    function appendLine(text) {
+        count++;
+        const div = document.createElement('div');
+        div.className = 'log-line ' + levelClass(text);
+        div.textContent = text;
+        div.dataset.text = text;
+        if (!shouldShow(text)) div.style.display = 'none';
+        container.appendChild(div);
+        lineCount.textContent = count + ' lines';
+        if (autoScroll.checked) container.scrollTop = container.scrollHeight;
+    }
+
+    function reapplyFilters() {
+        container.querySelectorAll('.log-line').forEach(div => {
+            div.style.display = shouldShow(div.dataset.text) ? '' : 'none';
+        });
+    }
+
+    filterDebug.addEventListener('change', reapplyFilters);
+    searchFilter.addEventListener('input', reapplyFilters);
+    clearBtn.addEventListener('click', () => {
+        container.innerHTML = '';
+        count = 0;
+        lineCount.textContent = '0 lines';
+    });
+
+    function connect() {
+        const es = new EventSource('/stream/logs');
+
+        es.onopen = () => {
+            statusDot.classList.remove('disconnected');
+            statusText.textContent = 'Connected – streaming live';
+        };
+
+        es.onmessage = (e) => {
+            if (e.data) appendLine(e.data);
+        };
+
+        es.onerror = () => {
+            statusDot.classList.add('disconnected');
+            statusText.textContent = 'Disconnected – reconnecting in 5s…';
+            es.close();
+            setTimeout(connect, 5000);
+        };
+    }
+
+    connect();
+})();
+</script>
+</body>
+</html>

@@ -1,9 +1,20 @@
-from flask import Flask, request, render_template, redirect, url_for, flash, jsonify
+from flask import Flask, request, render_template, redirect, url_for, flash, jsonify, Response, stream_with_context
 import configparser
 import os
+import subprocess
+import threading
+import time
 
 app = Flask(__name__)
 app.secret_key = os.urandom(32)
+
+# Path to the log file produced by logging_utils.py
+_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "visa_checker.log")
+
+# In-memory ring-buffer for update output (shared between threads)
+_update_output: list[str] = []
+_update_lock = threading.Lock()
+_update_running = False
 
 CONFIG_KEYS = [
     'EMAIL', 'PASSWORD', 'CURRENT_APPOINTMENT_DATE', 'LOCATION',
@@ -168,6 +179,139 @@ a {{ color: #58a6ff; }}
 </tbody></table>
 </body></html>"""
     return html
+
+
+@app.route('/logs')
+def logs():
+    """Live log viewer page."""
+    return render_template('logs.html')
+
+
+@app.route('/stream/logs')
+def stream_logs():
+    """Server-Sent Events endpoint that tails the log file."""
+    def generate():
+        # Send the last 200 lines of the log file first (catch-up)
+        try:
+            if os.path.exists(_LOG_PATH):
+                with open(_LOG_PATH, 'r', encoding='utf-8', errors='replace') as f:
+                    lines = f.readlines()
+                catchup = lines[-200:] if len(lines) > 200 else lines
+                for line in catchup:
+                    yield f"data: {line.rstrip()}\n\n"
+        except OSError:
+            yield "data: [log file not found – start the checker to generate logs]\n\n"
+
+        # Now tail for new lines
+        try:
+            with open(_LOG_PATH, 'r', encoding='utf-8', errors='replace') as f:
+                f.seek(0, 2)  # seek to end
+                idle_ticks = 0
+                while True:
+                    line = f.readline()
+                    if line:
+                        idle_ticks = 0
+                        yield f"data: {line.rstrip()}\n\n"
+                    else:
+                        time.sleep(0.5)
+                        idle_ticks += 1
+                        # Send a keep-alive comment every 30 seconds of inactivity
+                        if idle_ticks >= 60:
+                            idle_ticks = 0
+                            yield ": keep-alive\n\n"
+        except OSError:
+            yield "data: [log file disappeared]\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        content_type='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+        },
+    )
+
+
+@app.route('/update', methods=['GET'])
+def update_page():
+    """Web-based update page."""
+    return render_template('update.html')
+
+
+@app.route('/api/update', methods=['POST'])
+def api_update():
+    """Trigger a git pull + pip install and stream output back as plain text."""
+    global _update_running
+
+    with _update_lock:
+        if _update_running:
+            return jsonify({'error': 'An update is already in progress'}), 409
+        _update_running = True
+        _update_output.clear()
+
+    def run_update():
+        global _update_running
+        project_dir = os.path.dirname(os.path.abspath(__file__))
+        try:
+            _append_output("🔄 Starting update...\n")
+            # git pull
+            result = subprocess.run(
+                ['git', 'pull', 'origin', 'main'],
+                cwd=project_dir,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            _append_output(result.stdout or '')
+            if result.stderr:
+                _append_output(result.stderr)
+            if result.returncode != 0:
+                _append_output(f"⚠️  git pull exited with code {result.returncode}\n")
+                return
+
+            # pip install
+            _append_output("\n📦 Updating Python dependencies...\n")
+            pip_cmd = ['pip', 'install', '--upgrade', '-r', 'requirements.txt']
+            result = subprocess.run(
+                pip_cmd,
+                cwd=project_dir,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            _append_output(result.stdout or '')
+            if result.stderr:
+                _append_output(result.stderr)
+            if result.returncode == 0:
+                _append_output("\n✅ Update complete! Restart the checker for changes to take effect.\n")
+            else:
+                _append_output(f"\n⚠️  pip install exited with code {result.returncode}\n")
+        except Exception as exc:
+            _append_output(f"\n❌ Error during update: {exc}\n")
+        finally:
+            with _update_lock:
+                _update_running = False
+
+    thread = threading.Thread(target=run_update, daemon=True)
+    thread.start()
+    return jsonify({'status': 'started'})
+
+
+@app.route('/api/update/status')
+def api_update_status():
+    """Return current update output and running state."""
+    with _update_lock:
+        running = _update_running
+        output = list(_update_output)
+    return jsonify({'running': running, 'output': output})
+
+
+def _append_output(text: str) -> None:
+    with _update_lock:
+        _update_output.append(text)
+        # Keep buffer bounded
+        if len(_update_output) > 500:
+            _update_output.pop(0)
 
 
 if __name__ == '__main__':
