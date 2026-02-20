@@ -215,6 +215,61 @@ class SlotLedger:
         except Exception:  # noqa: BLE001
             return {}
 
+    def is_notified(self, slot_date: str, location: str, *, ttl_hours: int = 0) -> bool:
+        """Return True if this slot was already notified (within TTL if specified)."""
+        try:
+            with _connect(self.db_path) as conn:
+                if ttl_hours > 0:
+                    cutoff = (datetime.now() - timedelta(hours=ttl_hours)).isoformat()
+                    row = conn.execute(
+                        "SELECT 1 FROM slots WHERE slot_date = ? AND location = ? AND notified = 1 AND discovered >= ?",
+                        (slot_date, location, cutoff),
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        "SELECT 1 FROM slots WHERE slot_date = ? AND location = ? AND notified = 1",
+                        (slot_date, location),
+                    ).fetchone()
+            return row is not None
+        except Exception:  # noqa: BLE001
+            return False
+
+    def location_histogram(self, *, since_hours: int = 168) -> List[Tuple[str, int]]:
+        """Return (location, count) pairs for slots seen within the last since_hours."""
+        cutoff = (datetime.now() - timedelta(hours=since_hours)).isoformat()
+        try:
+            with _connect(self.db_path) as conn:
+                rows = conn.execute(
+                    "SELECT location, COUNT(*) AS cnt FROM slots WHERE discovered >= ? GROUP BY location ORDER BY cnt DESC",
+                    (cutoff,),
+                ).fetchall()
+            return [(r["location"], r["cnt"]) for r in rows]
+        except Exception:  # noqa: BLE001
+            return []
+
+    def location_score(self, location: str, *, since_hours: int = 168) -> float:
+        """Heuristic score for a location based on recent slot volume and recency."""
+        cutoff = (datetime.now() - timedelta(hours=since_hours)).isoformat()
+        try:
+            with _connect(self.db_path) as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS cnt, MAX(discovered) AS last_seen FROM slots WHERE location = ? AND discovered >= ?",
+                    (location, cutoff),
+                ).fetchone()
+            cnt = float(row["cnt"] or 0)
+            last_seen = row["last_seen"]
+            if not last_seen:
+                return cnt
+            try:
+                last_dt = datetime.fromisoformat(str(last_seen))
+            except ValueError:
+                return cnt
+            age_hours = max(0.0, (datetime.now() - last_dt).total_seconds() / 3600.0)
+            recency_boost = max(0.1, 1.0 - min(1.0, age_hours / max(1.0, since_hours)))
+            return round(cnt + recency_boost, 3)
+        except Exception:  # noqa: BLE001
+            return 0.0
+
     def hourly_histogram(self) -> List[Tuple[int, int]]:
         """Return ``(hour, count)`` pairs across all recorded slots."""
         try:

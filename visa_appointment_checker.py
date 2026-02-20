@@ -115,6 +115,8 @@ class CheckerConfig:
     # Time & rate preferences
     preferred_time: str
     max_requests_per_hour: int
+    max_api_requests_per_hour: int
+    max_ui_navigations_per_hour: int
     slot_ttl_hours: int
 
     @classmethod
@@ -244,6 +246,14 @@ class CheckerConfig:
             # Time & rate preferences
             preferred_time=_get("PREFERRED_TIME", "any"),
             max_requests_per_hour=max(0, _get_int("MAX_REQUESTS_PER_HOUR", 120)),
+            max_api_requests_per_hour=max(
+                0,
+                _get_int(
+                    "MAX_API_REQUESTS_PER_HOUR",
+                    _get_int("MAX_REQUESTS_PER_HOUR", 120),
+                ),
+            ),
+            max_ui_navigations_per_hour=max(0, _get_int("MAX_UI_NAVIGATIONS_PER_HOUR", 60)),
             slot_ttl_hours=max(1, _get_int("SLOT_TTL_HOURS", 24)),
         )
 
