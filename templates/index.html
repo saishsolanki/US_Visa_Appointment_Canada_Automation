@@ -152,7 +152,57 @@
         </label>
         <small>Whether to automatically book found appointments or just send notifications (recommended: unchecked for safety)</small>
 
+        <label for="AUTO_BOOK_DRY_RUN" class="checkbox-label">
+            <input type="checkbox" id="AUTO_BOOK_DRY_RUN" name="AUTO_BOOK_DRY_RUN" {% if current.AUTO_BOOK_DRY_RUN == 'True' %}checked{% endif %}> 🧪 Auto-Book Dry Run
+        </label>
+        <small>When enabled, auto-book will simulate the booking process without actually clicking confirm (recommended: enabled for testing)</small>
+
+        <label for="AUTO_BOOK_CONFIRMATION_WAIT_SECONDS">Auto-Book Confirmation Wait (seconds):</label>
+        <input type="number" id="AUTO_BOOK_CONFIRMATION_WAIT_SECONDS" name="AUTO_BOOK_CONFIRMATION_WAIT_SECONDS" value="{{ current.AUTO_BOOK_CONFIRMATION_WAIT_SECONDS }}" placeholder="30">
+        <small>Seconds to wait before confirming auto-book, giving you time to abort (recommended: 30)</small>
+
+        <label for="MIN_IMPROVEMENT_DAYS">Minimum Improvement (days):</label>
+        <input type="number" id="MIN_IMPROVEMENT_DAYS" name="MIN_IMPROVEMENT_DAYS" value="{{ current.MIN_IMPROVEMENT_DAYS }}" placeholder="7">
+        <small>Only notify/book if the new date is at least this many days earlier than current appointment (recommended: 7)</small>
+
+        <label for="TIMEZONE">Timezone:</label>
+        <input type="text" id="TIMEZONE" name="TIMEZONE" value="{{ current.TIMEZONE }}" placeholder="America/Toronto">
+        <small>IANA timezone for prime-time window calculations (e.g., America/Toronto, America/Vancouver)</small>
+
+        <h2 style="color: #0E9AA7; border-bottom: 2px solid #0E9AA7; padding-bottom: 5px;">📲 Instant Notifications</h2>
+
+        <label for="TELEGRAM_BOT_TOKEN">Telegram Bot Token:</label>
+        <input type="password" id="TELEGRAM_BOT_TOKEN" name="TELEGRAM_BOT_TOKEN" value="{{ current.TELEGRAM_BOT_TOKEN }}" placeholder="123456:ABC-DEF1234...">
+        <small>Create a bot via <a href="https://t.me/BotFather" target="_blank">@BotFather</a>, then paste the token here for &lt;1s push notifications</small>
+
+        <label for="TELEGRAM_CHAT_ID">Telegram Chat ID:</label>
+        <input type="text" id="TELEGRAM_CHAT_ID" name="TELEGRAM_CHAT_ID" value="{{ current.TELEGRAM_CHAT_ID }}" placeholder="123456789">
+        <small>Message <a href="https://t.me/userinfobot" target="_blank">@userinfobot</a> on Telegram to get your chat ID</small>
+
+        <label for="WEBHOOK_URL">Webhook URL (Discord / Slack / Custom):</label>
+        <input type="url" id="WEBHOOK_URL" name="WEBHOOK_URL" value="{{ current.WEBHOOK_URL }}" placeholder="https://discord.com/api/webhooks/...">
+        <small>Auto-detects Discord & Slack webhooks. Leave blank to disable</small>
+
+        <h2 style="color: #F27D42; border-bottom: 2px solid #F27D42; padding-bottom: 5px;">🎯 Auto-Book Preferences</h2>
+
+        <label for="PREFERRED_TIME">Preferred Appointment Time:</label>
+        <select id="PREFERRED_TIME" name="PREFERRED_TIME">
+            <option value="any" {% if current.PREFERRED_TIME == 'any' %}selected{% endif %}>Any time</option>
+            <option value="morning" {% if current.PREFERRED_TIME == 'morning' %}selected{% endif %}>Morning (around 9 AM)</option>
+            <option value="afternoon" {% if current.PREFERRED_TIME == 'afternoon' %}selected{% endif %}>Afternoon (around 2 PM)</option>
+            <option value="evening" {% if current.PREFERRED_TIME == 'evening' %}selected{% endif %}>Evening (around 5 PM)</option>
+        </select>
+        <small>When auto-booking, pick time slots closest to your preference</small>
+
         <h2 style="color: #8B4513; border-bottom: 2px solid #8B4513; padding-bottom: 5px;">⚙️ Performance Settings</h2>
+
+        <label for="MAX_REQUESTS_PER_HOUR">Max API Requests Per Hour:</label>
+        <input type="number" id="MAX_REQUESTS_PER_HOUR" name="MAX_REQUESTS_PER_HOUR" value="{{ current.MAX_REQUESTS_PER_HOUR }}" placeholder="120">
+        <small>Rate limit for JSON API fast-path requests (0 = unlimited, recommended: 120)</small>
+
+        <label for="SLOT_TTL_HOURS">Slot Ledger TTL (hours):</label>
+        <input type="number" id="SLOT_TTL_HOURS" name="SLOT_TTL_HOURS" value="{{ current.SLOT_TTL_HOURS }}" placeholder="24">
+        <small>Re-detect and re-notify about slots after this many hours (recommended: 24)</small>
 
         <label for="DRIVER_RESTART_CHECKS">Driver Restart Interval:</label>
         <input type="number" id="DRIVER_RESTART_CHECKS" name="DRIVER_RESTART_CHECKS" value="{{ current.DRIVER_RESTART_CHECKS }}" placeholder="50">
@@ -178,6 +228,9 @@
 
         <button type="submit" style="font-size: 16px; padding: 12px 24px;">💾 Save Strategic Configuration</button>
     </form>
+    <div style="text-align: center; margin-top: 20px;">
+        <a href="/analytics" style="color: #3498db; text-decoration: none; font-weight: 500;">📊 View Slot Analytics Dashboard</a>
+    </div>
     </div>
 </body>
 </html>

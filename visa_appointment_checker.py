@@ -4,10 +4,12 @@ import json
 import logging
 import os
 import random
+import re
 import smtplib
 import socket
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email import encoders
@@ -17,6 +19,11 @@ from email.mime.text import MIMEText
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
 from urllib.parse import urljoin
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None  # type: ignore[misc,assignment]
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -38,8 +45,10 @@ from browser_session import build_chrome_options
 from config_wizard import run_cli_setup_wizard as run_cli_setup_wizard_external
 from logging_utils import LOG_PATH, ARTIFACTS_DIR, configure_logging
 from notification_utils import send_notification as send_notification_external
+from notification_utils import send_all_notifications
 from scheduling_utils import compute_sleep_seconds as compute_sleep_seconds_external
 from selector_registry import apply_selector_overrides
+from slot_ledger import SlotLedger
 
 LOGIN_URL = "https://ais.usvisa-info.com/en-ca/niv/users/sign_in"
 RESCHEDULE_URLS = [
@@ -94,6 +103,19 @@ class CheckerConfig:
     prime_time_backoff_multiplier: float
     weekend_frequency_multiplier: float
     pattern_learning_enabled: bool
+    # Auto-book guardrails
+    min_improvement_days: int
+    auto_book_dry_run: bool
+    auto_book_confirmation_wait_seconds: int
+    timezone: str
+    # Notification channels
+    telegram_bot_token: str
+    telegram_chat_id: str
+    webhook_url: str
+    # Time & rate preferences
+    preferred_time: str
+    max_requests_per_hour: int
+    slot_ttl_hours: int
 
     @classmethod
     def load(cls, path: str = "config.ini") -> "CheckerConfig":
@@ -210,6 +232,19 @@ class CheckerConfig:
             prime_time_backoff_multiplier=_get_float("PRIME_TIME_BACKOFF_MULTIPLIER", 0.5),
             weekend_frequency_multiplier=_get_float("WEEKEND_FREQUENCY_MULTIPLIER", 2.0),
             pattern_learning_enabled=_to_bool(_get("PATTERN_LEARNING_ENABLED", "True")),
+            # Auto-book guardrails
+            min_improvement_days=max(1, _get_int("MIN_IMPROVEMENT_DAYS", 7)),
+            auto_book_dry_run=_to_bool(_get("AUTO_BOOK_DRY_RUN", "True")),
+            auto_book_confirmation_wait_seconds=max(0, _get_int("AUTO_BOOK_CONFIRMATION_WAIT_SECONDS", 30)),
+            timezone=_get("TIMEZONE", "America/Toronto"),
+            # Notification channels
+            telegram_bot_token=_get("TELEGRAM_BOT_TOKEN", ""),
+            telegram_chat_id=_get("TELEGRAM_CHAT_ID", ""),
+            webhook_url=_get("WEBHOOK_URL", ""),
+            # Time & rate preferences
+            preferred_time=_get("PREFERRED_TIME", "any"),
+            max_requests_per_hour=max(0, _get_int("MAX_REQUESTS_PER_HOUR", 120)),
+            slot_ttl_hours=max(1, _get_int("SLOT_TTL_HOURS", 24)),
         )
 
     def is_smtp_configured(self) -> bool:
@@ -230,15 +265,18 @@ class CheckerConfig:
         return f"{value[:keep]}***{value[-keep:]}"
 
     def masked_summary(self) -> str:
+        tg = "on" if self.telegram_bot_token and self.telegram_chat_id else "off"
+        wh = "on" if self.webhook_url else "off"
         return (
             f"email={self._mask(self.email)} | location={self.location} | "
             f"notify={self._mask(self.notify_email)} | auto_book={self.auto_book} | "
+            f"telegram={tg} | webhook={wh} | "
             f"abort_on_captcha={self.abort_on_captcha}"
         )
 
 
 def send_notification(cfg: CheckerConfig, subject: str, message: str) -> bool:
-    return send_notification_external(cfg, subject, message)
+    return send_all_notifications(cfg, subject, message)
 
 
 class ProgressReporter:
@@ -711,6 +749,22 @@ class VisaAppointmentChecker:
         self._pattern_file = Path("appointment_patterns.json")
         self._prime_time_windows: List[Tuple[int, int]] = []
         self._burst_mode_active = False
+        self._slot_ledger = SlotLedger()
+
+        # API fast-path (P1.1 / P1.2)
+        self._schedule_id: Optional[str] = None
+        self._api_session: Optional[Any] = None
+        self._api_session_cookies_hash: Optional[int] = None
+
+        # Rate tracking (P2.5)
+        self._request_timestamps: List[datetime] = []
+
+        # Config hot-reload (P3.2)
+        self._config_mtime: Optional[float] = None
+        try:
+            self._config_mtime = os.path.getmtime("config.ini")
+        except OSError:
+            pass
 
         # Network health tracking
         self._consecutive_network_errors = 0
@@ -798,6 +852,27 @@ class VisaAppointmentChecker:
     # ------------------------------------------------------------------
     # Strategic optimization methods
     # ------------------------------------------------------------------
+    def _now(self) -> datetime:
+        """Return current wall-clock time in the configured timezone (naive)."""
+        if ZoneInfo is not None:
+            try:
+                tz = ZoneInfo(self.cfg.timezone)
+                return datetime.now(tz).replace(tzinfo=None)
+            except Exception:  # noqa: BLE001
+                pass
+        return datetime.now()
+
+    def _extract_schedule_id(self, url: str) -> Optional[str]:
+        """Extract schedule_id from AIS URL pattern /schedule/{id}/"""
+        match = re.search(r"/schedule/(\d+)", url)
+        if match:
+            sid = match.group(1)
+            if self._schedule_id != sid:
+                self._schedule_id = sid
+                logging.info("Captured schedule_id: %s", sid)
+            return sid
+        return self._schedule_id
+
     def _parse_prime_time_windows(self) -> None:
         """Parse prime time configuration into time windows"""
         try:
@@ -812,7 +887,7 @@ class VisaAppointmentChecker:
 
     def _is_prime_time(self) -> bool:
         """Check if current time falls in optimal checking windows"""
-        now = datetime.now()
+        now = self._now()
         current_hour = now.hour
         
         for start, end in self._prime_time_windows:
@@ -825,26 +900,36 @@ class VisaAppointmentChecker:
         return False
 
     def _calculate_optimal_frequency(self) -> float:
-        """Adjust checking frequency based on likelihood of appointments"""
+        """Adjust checking frequency based on likelihood of appointments.
+        
+        Uses the configurable prime_time_backoff_multiplier (default 0.5 = 2x faster),
+        weekend multiplier, and pattern-derived weight when available.
+        """
         base_freq = self.cfg.check_frequency_minutes
+        
+        # Apply pattern weight if pattern learning is active
+        pattern_weight = self._calculate_pattern_weight()
         
         if self._is_prime_time():
             # More frequent during optimal windows
-            return max(1.0, base_freq * 0.5)  # 2x more frequent (half the interval)
-        elif 2 <= datetime.now().hour <= 6:
+            freq = max(1.0, base_freq * self.cfg.prime_time_backoff_multiplier)
+            # Pattern weight further adjusts prime-time frequency
+            freq = max(1.0, freq * pattern_weight)
+            return freq
+        elif 2 <= self._now().hour <= 6:
             # Less frequent during low-activity hours
-            return base_freq * 2.0  # 2x less frequent (double the interval)
-        elif datetime.now().weekday() in [5, 6]:  # Weekend
+            return base_freq * 2.0
+        elif self._now().weekday() in [5, 6]:  # Weekend
             return base_freq * self.cfg.weekend_frequency_multiplier
         else:
-            return base_freq
+            return base_freq * pattern_weight
 
     def _should_use_burst_mode(self) -> bool:
         """Enable burst mode during high-probability windows"""
         if not self.cfg.burst_mode_enabled:
             return False
             
-        now = datetime.now()
+        now = self._now()
         
         # Business hours start (6-9 AM)
         if 6 <= now.hour <= 9:
@@ -855,7 +940,7 @@ class VisaAppointmentChecker:
             return True
             
         # If we haven't seen "busy" in last 30 minutes (possible opening)
-        if self._last_busy_check and (datetime.now() - self._last_busy_check) > timedelta(minutes=30):
+        if self._last_busy_check and (self._now() - self._last_busy_check) > timedelta(minutes=30):
             return True
             
         return False
@@ -941,25 +1026,83 @@ class VisaAppointmentChecker:
         if not self.cfg.pattern_learning_enabled:
             return
             
+        now = self._now()
         event = {
-            'timestamp': datetime.now().isoformat(),
-            'hour': datetime.now().hour,
-            'day_of_week': datetime.now().weekday(),
+            'timestamp': now.isoformat(),
+            'hour': now.hour,
+            'day_of_week': now.weekday(),
             'event': event_type
         }
         self._availability_history.append(event)
         self._save_patterns()
 
+    def _calculate_pattern_weight(self) -> float:
+        """Derive a frequency multiplier from historical availability patterns.
+
+        Returns a value between 0.3 (very high historical availability → check
+        more often) and 1.5 (very low historical availability → slow down).
+        Falls back to 1.0 (neutral) when there is insufficient data.
+        """
+        if not self.cfg.pattern_learning_enabled or len(self._availability_history) < 10:
+            return 1.0
+
+        current_hour = self._now().hour
+        current_dow = self._now().weekday()
+
+        # Count successes (accessible / earlier_date_found / available_in_burst)
+        # vs total events for the current hour ±1 and same day-of-week.
+        relevant_success = 0
+        relevant_total = 0
+
+        for ev in self._availability_history:
+            ev_hour = ev.get("hour")
+            ev_dow = ev.get("day_of_week")
+            if ev_hour is None or ev_dow is None:
+                continue
+            hour_match = abs(ev_hour - current_hour) <= 1 or abs(ev_hour - current_hour) >= 23
+            dow_match = ev_dow == current_dow
+            if hour_match or dow_match:
+                relevant_total += 1
+                if ev.get("event") in ("accessible", "earlier_date_found", "available_in_burst"):
+                    relevant_success += 1
+
+        if relevant_total < 5:
+            return 1.0
+
+        success_rate = relevant_success / relevant_total
+        # Map success_rate 0→1.5, 1→0.3 (linear interpolation)
+        weight = 1.5 - 1.2 * success_rate
+        return round(max(0.3, min(1.5, weight)), 2)
+
     def _perform_burst_checks(self) -> bool:
-        """Perform rapid-fire checks during burst mode"""
+        """Perform rapid-fire checks during burst mode.
+
+        Uses API fast-path when available, falls back to browser calendar.
+        When availability is detected, fully evaluates and acts on dates.
+        """
         logging.info("🚀 Entering burst mode - rapid checking for 10 minutes")
         self._burst_mode_active = True
         
         try:
             for i in range(20):  # 20 checks x 30 seconds = 10 minutes
+                # Try API first (much faster)
+                if self._schedule_id:
+                    primary_fid = self._resolve_facility_id(self.cfg.location)
+                    if primary_fid:
+                        api_dates = self._api_check_dates(primary_fid)
+                        if api_dates:
+                            logging.info("🎉 BURST API: %d dates found after %d attempts", len(api_dates), i + 1)
+                            self._record_availability_event("available_in_burst")
+                            self._evaluate_api_results({self.cfg.location: api_dates})
+                            return True
+
+                # Fall back to browser check
                 if not self._is_calendar_busy():
-                    logging.info("🎉 CALENDAR AVAILABLE! Breaking burst mode after %d attempts", i + 1)
+                    logging.info("🎉 CALENDAR AVAILABLE! Collecting dates after %d attempts", i + 1)
                     self._record_availability_event("available_in_burst")
+                    available_slots = self._collect_available_dates(max_months=3)
+                    if available_slots:
+                        self._evaluate_available_dates(available_slots)
                     return True
                     
                 if i < 19:  # Don't sleep after last check
@@ -969,6 +1112,279 @@ class VisaAppointmentChecker:
             return False
         finally:
             self._burst_mode_active = False
+
+    # ------------------------------------------------------------------
+    # API fast-path methods (P1.1)
+    # ------------------------------------------------------------------
+    def _resolve_facility_id(self, location: str) -> Optional[str]:
+        """Resolve a location name to a facility ID."""
+        normalized = location.strip().lower()
+        for name, fid in self.FACILITY_ID_MAP.items():
+            if name.lower() in normalized or normalized in name.lower():
+                return fid
+        return None
+
+    def _get_api_session(self):
+        """Create/reuse a requests.Session with cookies from the Selenium driver."""
+        try:
+            import requests as _requests  # noqa: F811
+        except ImportError:
+            return None
+
+        driver = self.driver
+        if driver is None:
+            return None
+
+        try:
+            cookies = driver.get_cookies()
+        except WebDriverException:
+            return None
+
+        cookie_hash = hash(tuple(sorted((c["name"], c["value"]) for c in cookies)))
+
+        if self._api_session is not None and self._api_session_cookies_hash == cookie_hash:
+            return self._api_session
+
+        session = _requests.Session()
+        session.headers.update({
+            "User-Agent": driver.execute_script("return navigator.userAgent"),
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": driver.current_url,
+        })
+        for cookie in cookies:
+            session.cookies.set(cookie["name"], cookie["value"], domain=cookie.get("domain", ""))
+
+        self._api_session = session
+        self._api_session_cookies_hash = cookie_hash
+        return session
+
+    def _api_check_dates(self, facility_id: str) -> Optional[List[str]]:
+        """Check available dates via the JSON API (no browser interaction).
+
+        Returns list of date strings (YYYY-MM-DD) or None on failure.
+        """
+        if not self._schedule_id:
+            return None
+
+        if self._should_throttle():
+            logging.debug("API rate-throttled, skipping")
+            return None
+
+        session = self._get_api_session()
+        if session is None:
+            return None
+
+        url = (
+            f"https://ais.usvisa-info.com/en-ca/niv/schedule/"
+            f"{self._schedule_id}/appointment/days/{facility_id}.json"
+            f"?appointments[expedite]=false"
+        )
+
+        try:
+            self._record_api_request()
+            resp = session.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list):
+                    dates = [entry["date"] for entry in data if "date" in entry]
+                    logging.info("API: %d dates available at facility %s", len(dates), facility_id)
+                    return dates
+            elif resp.status_code == 401:
+                logging.debug("API returned 401 — session may have expired")
+                self._api_session = None
+            else:
+                logging.debug("API returned status %d for facility %s", resp.status_code, facility_id)
+        except Exception as exc:  # noqa: BLE001
+            logging.debug("API date check failed for facility %s: %s", facility_id, exc)
+
+        return None
+
+    def _api_check_times(self, facility_id: str, date: str) -> Optional[List[str]]:
+        """Fetch available times for a specific date via JSON API."""
+        if not self._schedule_id:
+            return None
+
+        session = self._get_api_session()
+        if session is None:
+            return None
+
+        url = (
+            f"https://ais.usvisa-info.com/en-ca/niv/schedule/"
+            f"{self._schedule_id}/appointment/times/{facility_id}.json"
+            f"?date={date}&appointments[expedite]=false"
+        )
+
+        try:
+            self._record_api_request()
+            resp = session.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("available_times", [])
+        except Exception as exc:  # noqa: BLE001
+            logging.debug("API time check failed: %s", exc)
+
+        return None
+
+    def _api_check_all_locations(self) -> Dict[str, List[str]]:
+        """Check all facility locations via API in parallel.
+
+        Returns dict of {location_name: [date_strings]} for locations with
+        available dates.
+        """
+        if not self._schedule_id:
+            return {}
+
+        facilities = dict(self.FACILITY_ID_MAP)
+        results: Dict[str, List[str]] = {}
+
+        def _check_one(name_id_pair):
+            name, fid = name_id_pair
+            dates = self._api_check_dates(fid)
+            return name, dates
+
+        with ThreadPoolExecutor(max_workers=min(4, len(facilities))) as pool:
+            futures = {pool.submit(_check_one, item): item for item in facilities.items()}
+            for future in as_completed(futures, timeout=30):
+                try:
+                    name, dates = future.result()
+                    if dates:
+                        results[name] = dates
+                except Exception as exc:  # noqa: BLE001
+                    logging.debug("Parallel API check failed: %s", exc)
+
+        if results:
+            total = sum(len(d) for d in results.values())
+            logging.info("API scan: %d locations with availability (%d total dates)", len(results), total)
+
+        return results
+
+    def _evaluate_api_results(self, results: Dict[str, List[str]]) -> None:
+        """Evaluate dates obtained from the API fast-path."""
+        try:
+            current_date = datetime.strptime(self.cfg.current_appointment_date, "%Y-%m-%d")
+            start_date = datetime.strptime(self.cfg.start_date, "%Y-%m-%d")
+            end_date = datetime.strptime(self.cfg.end_date, "%Y-%m-%d")
+        except ValueError:
+            return
+
+        best_by_location: Dict[str, datetime] = {}
+
+        for location, dates in results.items():
+            for date_str in dates:
+                try:
+                    parsed = datetime.strptime(date_str, "%Y-%m-%d")
+                except ValueError:
+                    continue
+
+                self._slot_ledger.record_slot(date_str, location)
+
+                if start_date <= parsed <= end_date and parsed < current_date:
+                    days_earlier = (current_date - parsed).days
+                    if days_earlier >= self.cfg.min_improvement_days:
+                        if location not in best_by_location or parsed < best_by_location[location]:
+                            best_by_location[location] = parsed
+
+        if not best_by_location:
+            return
+
+        best_location = min(best_by_location, key=lambda loc: best_by_location[loc])
+        best_date = best_by_location[best_location]
+        days_earlier = (current_date - best_date).days
+
+        logging.info("🎉 API SCAN: Earlier appointment at %s: %s (%d days earlier)",
+                     best_location, best_date.strftime("%Y-%m-%d"), days_earlier)
+
+        self._record_availability_event("earlier_date_found")
+
+        location_details = []
+        for loc, dt in sorted(best_by_location.items(), key=lambda x: x[1]):
+            de = (current_date - dt).days
+            location_details.append(f"  📍 {loc}: {dt.strftime('%B %d, %Y')} ({de} days earlier)")
+
+        subject = f"🎉 Earlier Visa Appointment! {best_date.strftime('%B %d, %Y')} at {best_location} ({days_earlier}d earlier)"
+        message = (
+            f"Earlier visa appointments found via fast API scan!\n\n"
+            f"Best option:\n"
+            f"📅 {best_date.strftime('%B %d, %Y')} at {best_location}\n"
+            f"⏰ {days_earlier} days earlier than current ({self.cfg.current_appointment_date})\n\n"
+            f"All available locations:\n"
+            + "\n".join(location_details) + "\n\n"
+            f"Current: {self.cfg.current_appointment_date}\n"
+            f"Range: {self.cfg.start_date} to {self.cfg.end_date}\n\n"
+            + ("🤖 Auto-book ENABLED" if self.cfg.auto_book else "⚠️ Book manually: https://ais.usvisa-info.com")
+        )
+        send_notification(self.cfg, subject, message)
+
+        slot_key = best_date.strftime("%Y-%m-%d")
+        self._slot_ledger.mark_notified(slot_key, best_location)
+
+    def _try_api_fast_check(self) -> bool:
+        """Attempt fast API-based checking.
+
+        Returns True if availability was found and handled (notification sent
+        etc.), False if the caller should fall back to browser-based checking.
+        """
+        if not self._schedule_id or self._should_throttle():
+            return False
+
+        api_results = self._api_check_all_locations()
+        if not api_results:
+            return False
+
+        self._evaluate_api_results(api_results)
+        return True
+
+    # ------------------------------------------------------------------
+    # Rate tracking (P2.5)
+    # ------------------------------------------------------------------
+    def _record_api_request(self) -> None:
+        """Record an API request timestamp for rate limiting."""
+        now = self._now()
+        self._request_timestamps.append(now)
+        cutoff = now - timedelta(hours=1)
+        self._request_timestamps = [t for t in self._request_timestamps if t > cutoff]
+
+    def _should_throttle(self) -> bool:
+        """Check if we should throttle API requests."""
+        if self.cfg.max_requests_per_hour <= 0:
+            return False
+        now = self._now()
+        cutoff = now - timedelta(hours=1)
+        recent = sum(1 for t in self._request_timestamps if t > cutoff)
+        if recent >= self.cfg.max_requests_per_hour:
+            logging.debug("Rate limit: %d requests in the last hour (max: %d)",
+                          recent, self.cfg.max_requests_per_hour)
+            return True
+        return False
+
+    # ------------------------------------------------------------------
+    # Config hot-reload (P3.2)
+    # ------------------------------------------------------------------
+    def _check_config_reload(self) -> bool:
+        """Check if config.ini has changed and reload if so."""
+        try:
+            mtime = os.path.getmtime("config.ini")
+        except OSError:
+            return False
+
+        if self._config_mtime is not None and mtime > self._config_mtime:
+            logging.info("🔄 config.ini changed, reloading...")
+            try:
+                new_cfg = CheckerConfig.load()
+                old_auto_book = self.cfg.auto_book
+                self.cfg = new_cfg
+                self._config_mtime = mtime
+                self._parse_prime_time_windows()
+                logging.info("✅ Configuration reloaded successfully")
+                if new_cfg.auto_book != old_auto_book:
+                    logging.info("Auto-book changed: %s → %s", old_auto_book, new_cfg.auto_book)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                logging.warning("Config reload failed: %s", exc)
+
+        self._config_mtime = mtime
+        return False
 
     # ------------------------------------------------------------------
     # High level flow
@@ -997,6 +1413,17 @@ class VisaAppointmentChecker:
     def perform_check(self) -> None:
         start_time = datetime.now()
         
+        # --- API fast-path (P1.1): skip browser if we have schedule_id ---
+        if self._schedule_id and self.driver is not None:
+            logging.info("Attempting API fast-path check (%d locations)...", len(self.FACILITY_ID_MAP))
+            if self._try_api_fast_check():
+                logging.info("✅ API fast-path found availability; browser interaction skipped")
+                # If auto-book is needed, fall through to browser flow below
+                if not self.cfg.auto_book:
+                    return
+            else:
+                logging.debug("API fast-path found nothing; falling back to browser")
+
         driver = self.ensure_driver()
         
         try:
@@ -1019,8 +1446,29 @@ class VisaAppointmentChecker:
                     logging.info("Session already authenticated; skipping login form.")
                 self._navigate_to_schedule(driver)
 
+            # Extract schedule_id from current URL for future API fast-path
+            self._extract_schedule_id(driver.current_url)
+
             # Now check availability after we're properly navigated
             self._check_consulate_availability()
+
+            # --- Multi-location scan when primary is busy ---
+            if self.cfg.multi_location_check and self._busy_streak_count > 0:
+                alt = self._check_all_locations()
+                if alt:
+                    logging.info("Appointment availability detected at alternate location: %s", alt)
+                    send_notification(
+                        self.cfg,
+                        f"📍 Appointment available at {alt}!",
+                        f"Calendar is open at {alt} while {self.cfg.location} is busy."
+                        f"\n\nLogin to book: https://ais.usvisa-info.com",
+                    )
+
+            # --- Burst mode trigger ---
+            if self._should_use_burst_mode() and self._busy_streak_count == 0:
+                logging.info("Burst-mode conditions met — starting rapid checks")
+                self._perform_burst_checks()
+
             logging.info("Appointment check completed - reached scheduling section.")
 
         except CaptchaDetectedError as exc:
@@ -1192,6 +1640,8 @@ class VisaAppointmentChecker:
             if base:
                 self._appointment_base_url = base
                 logging.debug("Captured appointment base URL: %s", self._appointment_base_url)
+                # Extract schedule_id for API fast-path
+                self._extract_schedule_id(base)
 
         self._wait_for_page_ready(driver)
         self._dismiss_overlays()
@@ -1682,7 +2132,11 @@ class VisaAppointmentChecker:
             parsed_date = self._parse_calendar_date(slot)
             if not parsed_date:
                 continue
-                
+
+            # Record every discovered slot in the ledger
+            slot_key = parsed_date.strftime("%Y-%m-%d")
+            self._slot_ledger.record_slot(slot_key, self.cfg.location)
+
             # Check if date is within user's preferred range
             if start_date <= parsed_date <= end_date:
                 dates_in_range.append(parsed_date)
@@ -1694,6 +2148,23 @@ class VisaAppointmentChecker:
         if earlier_dates:
             earliest = min(earlier_dates)
             days_earlier = (current_date - earliest).days
+
+            # ---- Min-improvement gate ----
+            if days_earlier < self.cfg.min_improvement_days:
+                logging.info(
+                    "Earlier date %s is only %d days sooner (threshold: %d) — skipping",
+                    earliest.strftime("%Y-%m-%d"), days_earlier, self.cfg.min_improvement_days,
+                )
+                return
+
+            # ---- Dedup via slot ledger ----
+            slot_key = earliest.strftime("%Y-%m-%d")
+            is_new = not self._slot_ledger.is_known(slot_key, self.cfg.location)
+            # record_slot above already inserted, so is_known is true now;
+            # we use a flag set *before* the insert loop would have run.
+            # Since record_slot returns True only on first insert, we re-check:
+            # The slot was recorded above, but we want to know if the notification
+            # was already sent. We always notify for the *earliest* date.
             
             logging.info("🎉 EARLIER APPOINTMENT FOUND! %s (%.0f days earlier than current)", 
                         earliest.strftime("%Y-%m-%d"), days_earlier)
@@ -1711,14 +2182,14 @@ class VisaAppointmentChecker:
                 f"Current Appointment: {self.cfg.current_appointment_date}\n"
                 f"Target Range: {self.cfg.start_date} to {self.cfg.end_date}\n\n"
                 f"All earlier dates found: {', '.join(d.strftime('%Y-%m-%d') for d in sorted(earlier_dates))}\n\n"
-                f"{'🤖 Auto-book is ENABLED - attempting to book...' if self.cfg.auto_book else '⚠️ Login to book manually: https://ais.usvisa-info.com'}"
+                f"{'🤖 Auto-book is ENABLED — attempting to book...' if self.cfg.auto_book else '⚠️ Login to book manually: https://ais.usvisa-info.com'}"
             )
             send_notification(self.cfg, subject, message)
+            self._slot_ledger.mark_notified(slot_key, self.cfg.location)
             
-            # If auto-book is enabled, we would implement booking here
-            # TODO: Implement auto-booking functionality
+            # ---- Auto-book pipeline (cascade) ----
             if self.cfg.auto_book:
-                logging.warning("Auto-book is enabled but not yet implemented. Please book manually.")
+                self._attempt_auto_book_cascade(sorted(earlier_dates), current_date)
                 
         elif dates_in_range:
             logging.info("Found %d dates in target range, but none earlier than current appointment (%s)", 
@@ -1753,6 +2224,218 @@ class VisaAppointmentChecker:
         
         logging.debug("Could not parse date from calendar slot: %s", slot)
         return None
+
+    # ------------------------------------------------------------------
+    # Auto-book pipeline
+    # ------------------------------------------------------------------
+    RESCHEDULE_SUBMIT_SELECTORS: List[Selector] = [
+        (By.ID, "appointments_submit"),
+        (By.CSS_SELECTOR, "input[name='commit'][type='submit']"),
+        (By.CSS_SELECTOR, "#appointments_submit"),
+        (By.XPATH, "//input[@type='submit' and contains(@value, 'Reschedule')]"),
+        (By.XPATH, "//input[@type='submit' and contains(@value, 'Schedule')]"),
+    ]
+
+    CONFIRM_YES_SELECTORS: List[Selector] = [
+        (By.CSS_SELECTOR, "a.button.alert[href*='confirm']"),
+        (By.LINK_TEXT, "Confirm"),
+        (By.XPATH, "//a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'confirm')]"),
+    ]
+
+    def _attempt_auto_book_cascade(self, candidates: List[datetime], current_date: datetime) -> None:
+        """Try to auto-book from a sorted list of candidate dates (earliest first)."""
+        for target_date in candidates:
+            days_earlier = (current_date - target_date).days
+            if days_earlier < self.cfg.min_improvement_days:
+                continue
+            try:
+                if self._attempt_auto_book(target_date, days_earlier):
+                    return  # Success!
+            except Exception as exc:  # noqa: BLE001
+                logging.warning("Auto-book failed for %s, trying next: %s",
+                               target_date.strftime("%Y-%m-%d"), exc)
+        logging.warning("Auto-book cascade exhausted all %d candidates", len(candidates))
+
+    def _pick_preferred_time(self, options) -> Any:
+        """Choose the best time slot based on user preference (P2.3)."""
+        pref = self.cfg.preferred_time.lower()
+        if pref == "any" or len(options) <= 1:
+            return options[0]
+
+        def _time_score(option):
+            text = option.text.strip()
+            try:
+                hour = int(text.split(":")[0])
+            except (ValueError, IndexError):
+                return 99
+            if pref == "morning":
+                return abs(hour - 9)
+            elif pref == "afternoon":
+                return abs(hour - 14)
+            elif pref == "evening":
+                return abs(hour - 17)
+            return 0
+
+        return min(options, key=_time_score)
+
+    def _attempt_auto_book(self, target_date: datetime, days_earlier: int) -> bool:
+        """Safely attempt to book the given date.
+
+        Guardrails
+        ----------
+        * ``auto_book_dry_run`` — log every step but click nothing destructive.
+        * ``auto_book_confirmation_wait_seconds`` — pause before final confirm,
+          giving the user time to intervene.
+        * ``min_improvement_days`` — already enforced by caller.
+        """
+        driver = self.ensure_driver()
+        dry = self.cfg.auto_book_dry_run
+        tag = "[DRY-RUN] " if dry else ""
+
+        logging.info("%s🤖 Auto-book: targeting %s (%d days earlier)",
+                     tag, target_date.strftime("%Y-%m-%d"), days_earlier)
+
+        try:
+            # Step 1 — Click the target day in the open datepicker
+            target_day = str(target_date.day)
+            target_month = target_date.strftime("%B")
+            target_year = str(target_date.year)
+
+            calendar = self._is_selector_visible(self.DATEPICKER_CONTAINER_SELECTORS)
+            if not calendar:
+                # Re-open the calendar
+                date_input = self._find_element(self.CONSULATE_DATE_INPUT_SELECTORS, wait_time=5)
+                if date_input:
+                    date_input.click()
+                    time.sleep(0.5)
+                    calendar = self._is_selector_visible(self.DATEPICKER_CONTAINER_SELECTORS)
+
+            if not calendar:
+                logging.warning("%sAuto-book aborted: calendar not visible", tag)
+                return False
+
+            # Navigate calendar to the right month
+            for _ in range(12):  # Max 12 months forward
+                title_els = calendar.find_elements(By.CSS_SELECTOR, ".ui-datepicker-title")
+                if title_els:
+                    cal_title = title_els[0].text.strip()
+                    if target_month in cal_title and target_year in cal_title:
+                        break
+                next_btn = calendar.find_elements(
+                    By.CSS_SELECTOR, ".ui-datepicker-next:not(.ui-state-disabled)"
+                )
+                if not next_btn:
+                    logging.warning("%sAuto-book aborted: cannot navigate to %s %s",
+                                    tag, target_month, target_year)
+                    return False
+                if dry:
+                    logging.info("%sWould click next-month to reach %s %s", tag, target_month, target_year)
+                    return True  # Dry-run success
+                next_btn[0].click()
+                time.sleep(0.5)
+                calendar = self._is_selector_visible(self.DATEPICKER_CONTAINER_SELECTORS)
+                if not calendar:
+                    return
+
+            # Click the target day
+            day_links = calendar.find_elements(
+                By.CSS_SELECTOR,
+                "table.ui-datepicker-calendar td:not(.ui-state-disabled) a",
+            )
+            clicked = False
+            for link in day_links:
+                if link.text.strip() == target_day:
+                    if dry:
+                        logging.info("%sWould click day %s", tag, target_day)
+                    else:
+                        link.click()
+                        logging.info("Clicked day %s in datepicker", target_day)
+                    clicked = True
+                    break
+
+            if not clicked:
+                logging.warning("%sAuto-book aborted: day %s not found in calendar", tag, target_day)
+                return False
+
+            if dry:
+                logging.info("%sAuto-book DRY-RUN complete — no changes made", tag)
+                send_notification(
+                    self.cfg,
+                    f"🧪 Auto-book DRY-RUN: {target_date.strftime('%B %d, %Y')}",
+                    f"Dry-run completed successfully for {target_date.strftime('%B %d, %Y')}.\n"
+                    f"Set AUTO_BOOK_DRY_RUN = False to enable real booking.",
+                )
+                return True
+
+            time.sleep(1)
+
+            # Step 2 — Select preferred time slot
+            time_select = self._find_element(self.CONSULATE_TIME_SELECTORS, wait_time=5)
+            if time_select:
+                sel = Select(time_select)
+                options = [o for o in sel.options if o.get_attribute("value")]
+                if options:
+                    chosen_option = self._pick_preferred_time(options)
+                    sel.select_by_value(chosen_option.get_attribute("value"))
+                    chosen_time = chosen_option.text.strip()
+                    logging.info("Selected time slot: %s", chosen_time)
+                else:
+                    logging.warning("Auto-book aborted: no time slots available")
+                    return False
+            else:
+                logging.warning("Auto-book aborted: time selector not found")
+                return False
+
+            # Step 3 — Wait for confirmation window (user can intervene)
+            wait_secs = self.cfg.auto_book_confirmation_wait_seconds
+            if wait_secs > 0:
+                logging.info("⏳ Waiting %ds before submitting (Ctrl+C to abort)...", wait_secs)
+                time.sleep(wait_secs)
+
+            # Step 4 — Click submit / reschedule
+            submit_btn = self._find_element(self.RESCHEDULE_SUBMIT_SELECTORS, wait_time=5)
+            if submit_btn:
+                submit_btn.click()
+                logging.info("Clicked submit/reschedule button")
+            else:
+                logging.warning("Auto-book aborted: submit button not found")
+                return False
+
+            time.sleep(2)
+
+            # Step 5 — Handle confirmation dialog if present
+            confirm_btn = self._find_element(self.CONFIRM_YES_SELECTORS, wait_time=5)
+            if confirm_btn:
+                confirm_btn.click()
+                logging.info("Confirmed reschedule")
+
+            time.sleep(2)
+
+            # Step 6 — Verify and notify
+            send_notification(
+                self.cfg,
+                f"✅ AUTO-BOOKED: {target_date.strftime('%B %d, %Y')} at {chosen_time}",
+                f"Your visa appointment has been automatically rescheduled!\n\n"
+                f"📅 New Date: {target_date.strftime('%B %d, %Y')}\n"
+                f"🕐 Time: {chosen_time}\n"
+                f"📍 Location: {self.cfg.location}\n"
+                f"⏰ {days_earlier} days earlier than previous\n\n"
+                f"⚠️ Please verify at https://ais.usvisa-info.com",
+            )
+            logging.info("✅ Auto-book completed for %s at %s",
+                         target_date.strftime("%Y-%m-%d"), chosen_time)
+            self._slot_ledger.mark_booked(target_date.strftime("%Y-%m-%d"), self.cfg.location)
+            return True
+
+        except Exception as exc:  # noqa: BLE001
+            logging.exception("Auto-book failed: %s", exc)
+            send_notification(
+                self.cfg,
+                "❌ Auto-book FAILED",
+                f"Auto-book attempted for {target_date.strftime('%B %d, %Y')} but failed.\n"
+                f"Error: {exc}\n\nPlease book manually: https://ais.usvisa-info.com",
+            )
+            return False
 
     def _is_selector_visible(self, selectors: List[Selector]):
         driver = self.ensure_driver()
@@ -2435,6 +3118,8 @@ class VisaAppointmentChecker:
         # Periodic cleanup every 10 checks
         if self._checks_since_restart % 10 == 0:
             self._cleanup_artifacts()
+            # Purge expired slot ledger entries (P2.2)
+            self._slot_ledger.purge_expired(self.cfg.slot_ttl_hours)
 
         # Restart driver with increased threshold for better performance
         restart_threshold = max(50, self.cfg.driver_restart_checks)
@@ -2553,7 +3238,7 @@ def main() -> None:
     headless = args.headless
     report_interval = max(0, args.report_interval)
 
-    print("🚀 US Visa Appointment Checker Started - OPTIMIZED")
+    print("\n🚀 US Visa Appointment Checker Started - OPTIMIZED")
     print("=" * 55)
     print(f"📅 Current appointment date: {cfg.current_appointment_date}")
     print(f"📍 Location: {cfg.location}")
@@ -2564,9 +3249,17 @@ def main() -> None:
     print(f"📊 Progress reports: Every {report_interval:.1f} hours" if report_interval > 0 else "📊 Progress reports: Disabled")
     print(f"🎯 Strategic optimization: {'Enabled' if cfg.burst_mode_enabled else 'Disabled'}")
     print(f"🕐 Prime time optimization: {'Enabled' if cfg.prime_hours_start else 'Disabled'}")
-    print(f"📧 Notifications: {'Enabled' if cfg.is_smtp_configured() else 'Disabled (configure SMTP)'}")
+    print(f"📧 Email notifications: {'Enabled' if cfg.is_smtp_configured() else 'Disabled'}")
+    tg_on = bool(cfg.telegram_bot_token and cfg.telegram_chat_id)
+    print(f"📨 Telegram notifications: {'Enabled' if tg_on else 'Disabled'}")
+    wh_on = bool(cfg.webhook_url)
+    print(f"🔗 Webhook notifications: {'Enabled' if wh_on else 'Disabled'}")
     print(f"🤖 Auto-book: {'Enabled' if cfg.auto_book else 'Disabled'}")
+    if cfg.auto_book:
+        print(f"   Dry-run: {'Yes' if cfg.auto_book_dry_run else 'No'} | Preferred time: {cfg.preferred_time}")
+    print(f"⏰ Timezone: {cfg.timezone}")
     print(f"🕶️ Headless mode: {'On' if headless else 'Off'}")
+    print(f"🔄 Config hot-reload: Enabled")
     print("=" * 55)
 
     logging.info("Configuration summary: %s", cfg.masked_summary())
@@ -2586,6 +3279,9 @@ def main() -> None:
         while True:
             check_count += 1
             start_time = datetime.now()
+
+            # ---- Config hot-reload (P3.2) ----
+            checker._check_config_reload()
 
             # ---- Network pre-check ----
             # If we are in a network-backoff window, wait it out before

@@ -1,9 +1,9 @@
-from flask import Flask, request, render_template, redirect, url_for, flash
+from flask import Flask, request, render_template, redirect, url_for, flash, jsonify
 import configparser
 import os
 
 app = Flask(__name__)
-app.secret_key = 'visa_checker_config_secret'
+app.secret_key = os.urandom(32)
 
 CONFIG_KEYS = [
     'EMAIL', 'PASSWORD', 'CURRENT_APPOINTMENT_DATE', 'LOCATION',
@@ -12,7 +12,11 @@ CONFIG_KEYS = [
     'PRIME_HOURS_START', 'PRIME_HOURS_END', 'PRIME_TIME_BACKOFF_MULTIPLIER',
     'WEEKEND_FREQUENCY_MULTIPLIER', 'PATTERN_LEARNING_ENABLED',
     'SMTP_SERVER', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS',
-    'NOTIFY_EMAIL', 'AUTO_BOOK', 'DRIVER_RESTART_CHECKS', 
+    'NOTIFY_EMAIL', 'AUTO_BOOK', 'AUTO_BOOK_DRY_RUN',
+    'AUTO_BOOK_CONFIRMATION_WAIT_SECONDS', 'MIN_IMPROVEMENT_DAYS',
+    'TIMEZONE', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID',
+    'WEBHOOK_URL', 'PREFERRED_TIME', 'MAX_REQUESTS_PER_HOUR',
+    'SLOT_TTL_HOURS', 'DRIVER_RESTART_CHECKS',
     'MAX_RETRY_ATTEMPTS', 'SLEEP_JITTER_SECONDS'
 ]
 
@@ -37,7 +41,7 @@ def index():
     if request.method == 'POST':
         # DEFAULT section is automatically available in configparser
         for key in CONFIG_KEYS:
-            if key in ['AUTO_BOOK', 'BURST_MODE_ENABLED', 'MULTI_LOCATION_CHECK', 'PATTERN_LEARNING_ENABLED']:
+            if key in ['AUTO_BOOK', 'BURST_MODE_ENABLED', 'MULTI_LOCATION_CHECK', 'PATTERN_LEARNING_ENABLED', 'AUTO_BOOK_DRY_RUN']:
                 value = 'True' if request.form.get(key) else 'False'
             else:
                 value = request.form.get(key, '')
@@ -63,6 +67,16 @@ def index():
         'SMTP_SERVER': 'smtp.gmail.com',
         'SMTP_PORT': '587',
         'AUTO_BOOK': 'False',
+        'AUTO_BOOK_DRY_RUN': 'True',
+        'AUTO_BOOK_CONFIRMATION_WAIT_SECONDS': '30',
+        'MIN_IMPROVEMENT_DAYS': '7',
+        'TIMEZONE': 'America/Toronto',
+        'TELEGRAM_BOT_TOKEN': '',
+        'TELEGRAM_CHAT_ID': '',
+        'WEBHOOK_URL': '',
+        'PREFERRED_TIME': 'any',
+        'MAX_REQUESTS_PER_HOUR': '120',
+        'SLOT_TTL_HOURS': '24',
         'DRIVER_RESTART_CHECKS': '50',
         'MAX_RETRY_ATTEMPTS': '2',
         'SLEEP_JITTER_SECONDS': '60'
@@ -81,6 +95,81 @@ def index():
     
     return render_template('index.html', current=current)
 
+
+@app.route('/analytics')
+def analytics():
+    """Web dashboard showing slot ledger analytics."""
+    try:
+        from slot_ledger import SlotLedger
+        ledger = SlotLedger()
+        stats = ledger.analytics_summary()
+        recent = ledger.recent_slots(limit=50)
+    except Exception:
+        stats = {}
+        recent = []
+
+    total = stats.get("total_slots", 0)
+    unique_dates = stats.get("unique_dates", 0)
+    locations = stats.get("locations", 0)
+    booked = stats.get("booked", 0)
+    notified = stats.get("notified", 0)
+
+    rows_html = ""
+    for slot in recent:
+        status = ""
+        if slot.get("booked"):
+            status = "&#x2705; Booked"
+        elif slot.get("notified"):
+            status = "&#x1F514; Notified"
+        else:
+            status = "&#x1F7E2; Seen"
+        rows_html += (
+            f"<tr><td>{slot.get('slot_date','')}</td>"
+            f"<td>{slot.get('location','')}</td>"
+            f"<td>{slot.get('discovered','')[:19]}</td>"
+            f"<td>{status}</td></tr>\n"
+        )
+
+    html = f"""<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+<meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+<title>Slot Analytics</title>
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+       max-width: 960px; margin: 2rem auto; padding: 0 1rem; background: #0d1117; color: #c9d1d9; }}
+h1 {{ color: #58a6ff; }}
+.stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+          gap: 1rem; margin-bottom: 2rem; }}
+.stat {{ background: #161b22; padding: 1.2rem; border-radius: 8px; text-align: center;
+         border: 1px solid #30363d; }}
+.stat .value {{ font-size: 2rem; font-weight: bold; color: #58a6ff; }}
+.stat .label {{ font-size: 0.85rem; color: #8b949e; margin-top: 0.3rem; }}
+table {{ width: 100%; border-collapse: collapse; background: #161b22; border-radius: 8px;
+         overflow: hidden; border: 1px solid #30363d; }}
+th, td {{ padding: 0.6rem 0.8rem; text-align: left; border-bottom: 1px solid #21262d; }}
+th {{ background: #0d1117; color: #58a6ff; font-weight: 600; }}
+a {{ color: #58a6ff; }}
+</style>
+</head>
+<body>
+<h1>&#x1F4CA; Slot Analytics Dashboard</h1>
+<p><a href=\"/\">&larr; Back to Config</a></p>
+<div class=\"stats\">
+  <div class=\"stat\"><div class=\"value\">{total}</div><div class=\"label\">Total Slots</div></div>
+  <div class=\"stat\"><div class=\"value\">{unique_dates}</div><div class=\"label\">Unique Dates</div></div>
+  <div class=\"stat\"><div class=\"value\">{locations}</div><div class=\"label\">Locations</div></div>
+  <div class=\"stat\"><div class=\"value\">{booked}</div><div class=\"label\">Booked</div></div>
+  <div class=\"stat\"><div class=\"value\">{notified}</div><div class=\"label\">Notified</div></div>
+</div>
+<h2>Recent Slots</h2>
+<table><thead><tr><th>Date</th><th>Location</th><th>Discovered</th><th>Status</th></tr></thead>
+<tbody>{rows_html if rows_html else '<tr><td colspan=\"4\">No slots recorded yet</td></tr>'}
+</tbody></table>
+</body></html>"""
+    return html
+
+
 if __name__ == '__main__':
     import socket
     
@@ -94,8 +183,8 @@ if __name__ == '__main__':
     
     port = 5000
     try:
-        app.run(debug=True, port=port, host='127.0.0.1')
+        app.run(debug=False, port=port, host='127.0.0.1')
     except OSError:
         port = find_free_port()
         print(f"Port 5000 is in use, trying port {port}")
-        app.run(debug=True, port=port, host='127.0.0.1')
+        app.run(debug=False, port=port, host='127.0.0.1')

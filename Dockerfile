@@ -61,8 +61,10 @@ COPY requirements.txt .
 RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
 # Copy application code
-COPY visa_appointment_checker.py .
+COPY *.py ./
+COPY selectors.yml .
 COPY config.ini.template .
+COPY templates/ templates/
 
 # Create directories
 RUN mkdir -p logs artifacts
