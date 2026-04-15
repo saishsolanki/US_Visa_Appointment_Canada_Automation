@@ -75,11 +75,7 @@ US_Visa_Appointment_Canada_Automation/
 ├── web_ui.py                      # Web interface for configuration
 ├── install.py                     # Windows installation script
 ├── install.bat                    # Windows batch installer
-├── install_ubuntu.sh             # Ubuntu installation script
-├── install_debian.sh             # Debian installation script
-├── install_fedora.sh             # Fedora installation script
-├── install_arch.sh               # Arch Linux installation script
-├── install_kali.sh               # Kali Linux installation script
+├── install.sh                     # Linux/macOS one-command installer (detects distro)
 ├── config.ini                    # Configuration file with performance settings (created from template)
 ├── config.ini.template          # Configuration template with placeholder values
 ├── .env.performance              # Browser performance environment variables
@@ -96,7 +92,6 @@ US_Visa_Appointment_Canada_Automation/
 ├── run.bat                       # Windows runner script
 ├── README.md                     # This file
 ├── FAQ.md                        # Quick troubleshooting flowchart and FAQs
-├── PERFORMANCE_OPTIMIZATIONS.md  # Detailed performance optimization guide
 ├── GMAIL_SETUP_GUIDE.md         # Gmail SMTP configuration guide
 ├── SECURITY.md                  # Security and privacy guide
 └── LICENSE                       # MIT License
@@ -113,35 +108,14 @@ python install.py
 install.bat
 ```
 
-### Linux
-Choose the script for your distribution:
-
-**Ubuntu:**
+### Linux (all distros — Ubuntu, Debian, Fedora, Arch, Kali)
 ```bash
-chmod +x install_ubuntu.sh && ./install_ubuntu.sh
+chmod +x install.sh && ./install.sh
 ```
 
-**Debian:**
-```bash
-chmod +x install_debian.sh && ./install_debian.sh
-```
+`install.sh` auto-detects your package manager (`apt`, `dnf`, or `pacman`) and gives you a choice of Docker or native Python + systemd installation.
 
-**Fedora:**
-```bash
-chmod +x install_fedora.sh && ./install_fedora.sh
-```
-
-**Arch Linux:**
-```bash
-chmod +x install_arch.sh && ./install_arch.sh
-```
-
-**Kali Linux:**
-```bash
-chmod +x install_kali.sh && ./install_kali.sh
-```
-
-These scripts will install Python3, pip, create a virtual environment, install dependencies, and create default configuration with wrapper scripts and performance optimizations.
+These scripts will install Python3, pip, create a virtual environment, install dependencies, and create default configuration with wrapper scripts.
 
 ### Linux: Install as a systemd service
 The repository includes a ready-to-customize `visa-checker.service` file for unattended startup.
@@ -170,14 +144,14 @@ journalctl -u visa-checker.service -f
 - ✅ Sets up Windows-compatible wrapper scripts (`run.bat`)
 - ✅ Configures Chrome WebDriver for Windows performance optimization
 
-#### Linux Installation (Distribution-Specific Scripts)
-- ✅ Installs Python 3.8+ and pip using native package managers
+#### Linux Installation (`install.sh`)
+- ✅ Auto-detects your package manager (`apt`, `dnf`, `pacman`)
+- ✅ Installs Python 3.8+ and pip using native package manager
 - ✅ Creates isolated virtual environment (`visa_env/`)
-- ✅ Installs required dependencies with Linux-optimized versions
+- ✅ Installs required dependencies from `requirements.txt`
 - ✅ Creates wrapper scripts: `run_visa_checker.sh`, `run_web_ui.sh`
-- ✅ Creates default `config.ini` with performance optimization settings
-- ✅ Sets up `.env.performance` for browser optimization
-- ✅ Configures distribution-specific package dependencies
+- ✅ Configures `config.ini` from template (interactive prompts)
+- ✅ Sets up Docker or systemd service (your choice)
 
 #### Cross-Platform Performance Setup
 All installers automatically configure:
@@ -320,11 +294,10 @@ The configuration now includes advanced strategic optimizations for **3-5x bette
 - **4x more opportunities** with multi-location coverage
 - **Intelligent resource usage** with weekend and off-peak optimization
 
-For comprehensive optimization details, see [`STRATEGIC_OPTIMIZATION_GUIDE.md`](STRATEGIC_OPTIMIZATION_GUIDE.md).
+For comprehensive optimization details, see [`config.ini.template`](config.ini.template) for all available settings.
 
 ### Performance Configuration
-The system includes advanced performance optimizations. For detailed configuration:
-- See [`PERFORMANCE_OPTIMIZATIONS.md`](PERFORMANCE_OPTIMIZATIONS.md) for comprehensive performance tuning
+The system includes advanced performance optimizations:
 - Use `.env.performance` file for browser performance variables
 - Monitor performance metrics in logs with "Performance stats" indicators
 
@@ -586,7 +559,7 @@ Monitor these indicators in your logs:
 - `Adaptive timing active` - Dynamic frequency adjustment working
 - `Memory cleanup completed` - Resource management active
 
-For detailed performance configuration, see [`PERFORMANCE_OPTIMIZATIONS.md`](PERFORMANCE_OPTIMIZATIONS.md).
+For detailed performance configuration, see the `config.ini.template` settings and `.env.performance`.
 
 ## 🔧 Troubleshooting
 
@@ -641,14 +614,14 @@ pip install webdriver-manager
 - If session reuse isn't working, check `visa_checker.log` for session validation messages
 - Monitor adaptive timing behavior in console output
 - Use `.env.performance` file to fine-tune browser performance settings
-- See [`PERFORMANCE_OPTIMIZATIONS.md`](PERFORMANCE_OPTIMIZATIONS.md) for detailed troubleshooting
+- See `visa_checker.log` or `journalctl` output for detailed performance troubleshooting
 
 ### Getting Help
 1. **Check console output**: Real-time progress with performance metrics, emojis and timestamps
 2. **Check the logs**: `cat visa_checker.log` or `tail -f visa_checker.log` for detailed step-by-step information with performance stats
 3. **Monitor performance**: Look for "Performance stats", "Adaptive timing", and session reuse indicators
 4. **Verify configuration**: `cat config.ini` (ensure no placeholder values remain and performance settings are configured)
-5. **Check optimization files**: Review `.env.performance` and [`PERFORMANCE_OPTIMIZATIONS.md`](PERFORMANCE_OPTIMIZATIONS.md)
+5. **Verify configuration**: `cat config.ini` (ensure no placeholder values remain)
 6. **Test manual login**: Try accessing the AIS website manually to verify your credentials work
 7. **Check internet connection**: Ensure stable connectivity for website monitoring
 
@@ -656,7 +629,6 @@ pip install webdriver-manager
 - [`README.md`](README.md) - Main documentation (this file)
 - [`FAQ.md`](FAQ.md) - Quick troubleshooting flowchart and fixes
 - [`GMAIL_SETUP_GUIDE.md`](GMAIL_SETUP_GUIDE.md) - Detailed Gmail SMTP configuration
-- [`PERFORMANCE_OPTIMIZATIONS.md`](PERFORMANCE_OPTIMIZATIONS.md) - Comprehensive performance guide
 - [`CHANGELOG.md`](CHANGELOG.md) - Versioned release notes
 - `visa_checker.log` - Runtime logs with performance metrics
 - `.env.performance` - Browser performance environment variables
