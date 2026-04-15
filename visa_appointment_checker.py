@@ -7,6 +7,7 @@ import random
 import re
 import smtplib
 import socket
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -58,6 +59,14 @@ RESCHEDULE_URLS = [
 
 # Keep webdriver-manager quiet unless user overrides
 os.environ.setdefault("WDM_LOG_LEVEL", "0")
+
+if sys.platform == "win32":
+    try:
+        import winsound  # type: ignore[import-not-found]
+    except ImportError:
+        winsound = None
+else:
+    winsound = None
 
 Selector = Tuple[str, str]
 
@@ -746,6 +755,7 @@ class VisaAppointmentChecker:
 
     # Maximum backoff (minutes) applied when the Scheduling Limit Warning page is hit repeatedly
     SCHEDULING_LIMIT_MAX_BACKOFF_MINUTES: int = 120
+    EXCLUSION_WINDOW_LIMIT: int = 9
 
     # Selectors for the Continue acknowledgment button on the Scheduling Limit Warning page
     WARNING_CONTINUE_SELECTORS: List[Selector] = [
@@ -799,7 +809,7 @@ class VisaAppointmentChecker:
         self._availability_history: List[Dict[str, Any]] = []
         self._pattern_file = Path("appointment_patterns.json")
         self._prime_time_windows: List[Tuple[int, int]] = []
-        self._excluded_windows: List[Tuple[datetime, datetime]] = []
+        self._excluded_date_windows: List[Tuple[datetime, datetime]] = []
         self._burst_mode_active = False
         self._slot_ledger = SlotLedger()
         self._rotation_accounts: List[Tuple[str, str]] = []
@@ -944,16 +954,21 @@ class VisaAppointmentChecker:
         Accepted entry formats:
         - YYYY-MM-DD:YYYY-MM-DD
         - YYYY-MM-DD to YYYY-MM-DD
+
+        At most ``EXCLUSION_WINDOW_LIMIT`` windows are used to keep parsing
+        predictable and align with common user scheduling use cases.
         """
-        self._excluded_windows = []
+        self._excluded_date_windows = []
         raw = (self.cfg.excluded_date_ranges or "").strip()
         if not raw:
             return
 
         chunks = [c.strip() for c in raw.replace("\n", ";").split(";") if c.strip()]
-        if len(chunks) > 9:
-            chunks = chunks[:9]
-            logging.warning("Only first 9 exclusion windows are used")
+        if len(chunks) > self.EXCLUSION_WINDOW_LIMIT:
+            dropped = chunks[self.EXCLUSION_WINDOW_LIMIT:]
+            chunks = chunks[:self.EXCLUSION_WINDOW_LIMIT]
+            logging.warning("Only first %d exclusion windows are used", self.EXCLUSION_WINDOW_LIMIT)
+            logging.warning("Dropped exclusion windows: %s", dropped)
 
         for chunk in chunks:
             token = chunk.replace(" to ", ":")
@@ -969,13 +984,15 @@ class VisaAppointmentChecker:
                 continue
             if start_dt > end_dt:
                 start_dt, end_dt = end_dt, start_dt
-            self._excluded_windows.append((start_dt, end_dt))
+            self._excluded_date_windows.append((start_dt, end_dt))
 
-        if self._excluded_windows:
-            logging.info("Configured %d exclusion window(s)", len(self._excluded_windows))
+        if self._excluded_date_windows:
+            logging.info("Configured %d exclusion window(s)", len(self._excluded_date_windows))
 
     def _is_excluded_date(self, date_value: datetime) -> bool:
-        for start_dt, end_dt in getattr(self, "_excluded_windows", []):
+        if not hasattr(self, "_excluded_date_windows"):
+            self._excluded_date_windows = []
+        for start_dt, end_dt in self._excluded_date_windows:
             if start_dt <= date_value <= end_dt:
                 return True
         return False
@@ -1025,10 +1042,13 @@ class VisaAppointmentChecker:
         if not self.cfg.audio_alerts_enabled:
             return
         try:
-            import winsound
-            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
-        except Exception:
-            print("\a", end="", flush=True)
+            if winsound is not None:
+                winsound.MessageBeep(0x30)
+            elif sys.stdout.isatty():
+                sys.stdout.write("\a")
+                sys.stdout.flush()
+        except Exception:  # noqa: BLE001
+            pass
         logging.info("Audio alert triggered: %s", reason)
 
     def _parse_prime_time_windows(self) -> None:

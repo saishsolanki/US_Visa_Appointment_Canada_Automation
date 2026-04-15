@@ -416,7 +416,7 @@ class TestExcludedDateRanges:
         with patch.object(VisaAppointmentChecker, "__init__", lambda self, *a, **k: None):
             checker = VisaAppointmentChecker.__new__(VisaAppointmentChecker)
         checker.cfg = cfg
-        checker._excluded_windows = []
+        checker._excluded_date_windows = []
         checker._slot_ledger = MagicMock()
         checker._slot_ledger.record_slot.return_value = True
         checker._record_availability_event = MagicMock()

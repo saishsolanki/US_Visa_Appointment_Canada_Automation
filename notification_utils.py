@@ -100,9 +100,15 @@ def send_pushover_notification(app_token: str, user_key: str, subject: str, mess
     if not app_token or not user_key:
         return False
 
+    if len(subject) > 250:
+        logging.warning("Pushover title exceeds 250 chars and will be truncated")
+    if len(message) > 1024:
+        logging.warning("Pushover message exceeds 1024 chars and will be truncated")
+
     payload = urllib.parse.urlencode({
         "token": app_token,
         "user": user_key,
+        # Pushover limits: title max 250 chars, message max 1024 chars.
         "title": subject[:250],
         "message": message[:1024],
     }).encode("utf-8")
