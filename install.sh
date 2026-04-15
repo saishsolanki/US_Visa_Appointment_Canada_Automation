@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# US Visa Appointment Checker - Ubuntu One-Command Installer
+# US Visa Appointment Checker - One-Command Installer (Linux)
 # 
 # Usage: curl -fsSL https://raw.githubusercontent.com/saishsolanki/US_Visa_Appointment_Canada_Automation/main/install.sh | bash
 # 
@@ -26,8 +26,20 @@ echo -e "${NC}"
 
 # Check if running on Linux
 if [[ "$OSTYPE" != "linux-gnu"* ]]; then
-    echo -e "${RED}❌ This installer is designed for Linux (Ubuntu/Debian).${NC}"
+    echo -e "${RED}❌ This installer is designed for Linux.${NC}"
     echo "For Windows, use install.bat or run manually with Python."
+    exit 1
+fi
+
+# Detect package manager
+if command -v apt-get &> /dev/null; then
+    PKG_MANAGER="apt"
+elif command -v dnf &> /dev/null; then
+    PKG_MANAGER="dnf"
+elif command -v pacman &> /dev/null; then
+    PKG_MANAGER="pacman"
+else
+    echo -e "${RED}❌ Unsupported package manager. Install Python3, pip, and venv manually, then re-run.${NC}"
     exit 1
 fi
 
@@ -58,23 +70,33 @@ case $install_choice in
         if ! command -v docker &> /dev/null; then
             echo -e "${YELLOW}Installing Docker...${NC}"
             
-            # Install Docker prerequisites
-            sudo apt-get update
-            sudo apt-get install -y ca-certificates curl gnupg
-            
-            # Add Docker's GPG key
-            sudo install -m 0755 -d /etc/apt/keyrings
-            if [[ ! -f /etc/apt/keyrings/docker.asc ]]; then
-                curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.asc
-                sudo chmod a+r /etc/apt/keyrings/docker.asc
+            if [[ "$PKG_MANAGER" == "apt" ]]; then
+                # Install Docker prerequisites
+                sudo apt-get update
+                sudo apt-get install -y ca-certificates curl gnupg
+                
+                # Add Docker's GPG key
+                sudo install -m 0755 -d /etc/apt/keyrings
+                if [[ ! -f /etc/apt/keyrings/docker.asc ]]; then
+                    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.asc
+                    sudo chmod a+r /etc/apt/keyrings/docker.asc
+                fi
+                
+                # Add Docker repository
+                echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+                
+                # Install Docker
+                sudo apt-get update
+                sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+            elif [[ "$PKG_MANAGER" == "dnf" ]]; then
+                sudo dnf -y install dnf-plugins-core
+                sudo dnf config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo
+                sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+                sudo systemctl enable --now docker
+            elif [[ "$PKG_MANAGER" == "pacman" ]]; then
+                sudo pacman -Sy --noconfirm docker docker-compose
+                sudo systemctl enable --now docker
             fi
-            
-            # Add Docker repository
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-            
-            # Install Docker
-            sudo apt-get update
-            sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
             
             # Add user to docker group
             sudo usermod -aG docker $USER
@@ -160,16 +182,31 @@ case $install_choice in
         
         # Install system dependencies
         echo -e "${YELLOW}Installing system dependencies...${NC}"
-        sudo apt-get update
-        sudo apt-get install -y python3 python3-pip python3-venv wget gnupg curl
+        if [[ "$PKG_MANAGER" == "apt" ]]; then
+            sudo apt-get update
+            sudo apt-get install -y python3 python3-pip python3-venv wget gnupg curl
+        elif [[ "$PKG_MANAGER" == "dnf" ]]; then
+            sudo dnf install -y python3 python3-pip wget curl
+        elif [[ "$PKG_MANAGER" == "pacman" ]]; then
+            sudo pacman -Sy --noconfirm python python-pip wget curl
+        fi
         
         # Install Chrome if not present
         if ! command -v google-chrome &> /dev/null; then
             echo -e "${YELLOW}Installing Google Chrome...${NC}"
-            wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
-            echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
-            sudo apt-get update
-            sudo apt-get install -y google-chrome-stable
+            if [[ "$PKG_MANAGER" == "apt" ]]; then
+                wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
+                echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+                sudo apt-get update
+                sudo apt-get install -y google-chrome-stable
+            elif [[ "$PKG_MANAGER" == "dnf" ]]; then
+                sudo dnf install -y fedora-workstation-repositories 2>/dev/null || true
+                sudo dnf config-manager --set-enabled google-chrome 2>/dev/null || \
+                    (wget -q -O /tmp/google-chrome.rpm https://dl.google.com/linux/direct/google-chrome-stable_current_x86_64.rpm && sudo dnf install -y /tmp/google-chrome.rpm)
+            elif [[ "$PKG_MANAGER" == "pacman" ]]; then
+                echo -e "${YELLOW}⚠ Install google-chrome from AUR (e.g. yay -S google-chrome) then re-run this script.${NC}"
+                exit 1
+            fi
             echo -e "${GREEN}✓ Google Chrome installed${NC}"
         else
             echo -e "${GREEN}✓ Google Chrome already installed${NC}"

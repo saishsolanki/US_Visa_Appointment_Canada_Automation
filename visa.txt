@@ -1,6 +1,7 @@
 This file contained raw HTTP traffic captures (Burp Suite export) and has been cleared.
-It is now listed in .gitignore so it will not be re-tracked.
+It is listed in .gitignore and will not be re-tracked after removal from the working tree.
 Do not commit or share HTTP capture files – they may contain session cookies and credentials.
+
 
 <items burpVersion="2026.1.4" exportTime="Fri Feb 20 17:48:00 EST 2026">
   <item>
