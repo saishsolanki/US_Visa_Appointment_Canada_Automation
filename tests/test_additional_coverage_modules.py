@@ -122,8 +122,8 @@ def test_configure_logging_uses_fallback_paths(monkeypatch: pytest.MonkeyPatch, 
     def _raise_oserror(*args, **kwargs):
         raise OSError("no write")
 
-    monkeypatch.setattr(logging_utils.LOG_DIR, "mkdir", _raise_oserror)
-    monkeypatch.setattr(logging_utils.ARTIFACTS_DIR, "mkdir", lambda *a, **k: None)
+    monkeypatch.setattr(logging_utils, "LOG_DIR", SimpleNamespace(mkdir=_raise_oserror))
+    monkeypatch.setattr(logging_utils, "ARTIFACTS_DIR", SimpleNamespace(mkdir=lambda *a, **k: None))
     monkeypatch.setattr(logging_utils, "RotatingFileHandler", lambda *a, **k: MagicMock())
     monkeypatch.setattr(logging, "basicConfig", lambda **kwargs: None)
 
@@ -238,7 +238,7 @@ smtp_port = 587
     )
     secrets = iter(["secret-pass", "smtp-pass"])
 
-    monkeypatch.setattr(config_wizard, "input", lambda *_: next(inputs))
+    monkeypatch.setattr("builtins.input", lambda *_: next(inputs))
     monkeypatch.setattr(config_wizard, "getpass", lambda *_: next(secrets))
 
     config_wizard.run_cli_setup_wizard(str(out_cfg), str(template))
