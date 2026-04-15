@@ -2,6 +2,7 @@ import json
 import logging
 import smtplib
 import urllib.error
+import urllib.parse
 import urllib.request
 from email.mime.text import MIMEText
 
@@ -94,8 +95,38 @@ def send_webhook_notification(webhook_url: str, subject: str, message: str) -> b
     return False
 
 
+def send_pushover_notification(app_token: str, user_key: str, subject: str, message: str) -> bool:
+    """Send an instant mobile push notification via Pushover."""
+    if not app_token or not user_key:
+        return False
+
+    payload = urllib.parse.urlencode({
+        "token": app_token,
+        "user": user_key,
+        "title": subject[:250],
+        "message": message[:1024],
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.pushover.net/1/messages.json",
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status == 200:
+                logging.info("Pushover notification sent successfully")
+                return True
+            logging.warning("Pushover API returned status %d", resp.status)
+    except urllib.error.HTTPError as exc:
+        logging.warning("Pushover notification failed (HTTP %d): %s", exc.code, exc.reason)
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("Pushover notification failed: %s", exc)
+
+    return False
+
+
 def send_all_notifications(cfg, subject: str, message: str) -> bool:
-    """Send notification via all configured channels (email, Telegram, webhook)."""
+    """Send notification via all configured channels."""
     results = []
 
     # Email
@@ -111,5 +142,11 @@ def send_all_notifications(cfg, subject: str, message: str) -> bool:
     webhook_url = getattr(cfg, "webhook_url", "") or ""
     if webhook_url:
         results.append(send_webhook_notification(webhook_url, subject, message))
+
+    # Pushover
+    pushover_app_token = getattr(cfg, "pushover_app_token", "") or ""
+    pushover_user_key = getattr(cfg, "pushover_user_key", "") or ""
+    if pushover_app_token and pushover_user_key:
+        results.append(send_pushover_notification(pushover_app_token, pushover_user_key, subject, message))
 
     return any(results)

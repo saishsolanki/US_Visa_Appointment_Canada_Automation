@@ -77,11 +77,21 @@ def _make_config(**overrides):  # type: ignore[override]
         telegram_bot_token="",
         telegram_chat_id="",
         webhook_url="",
+        pushover_app_token="",
+        pushover_user_key="",
         preferred_time="any",
         max_requests_per_hour=120,
         max_api_requests_per_hour=120,
         max_ui_navigations_per_hour=60,
         slot_ttl_hours=24,
+        test_mode=False,
+        excluded_date_ranges="",
+        safety_first_mode=False,
+        safety_first_min_interval_minutes=10,
+        audio_alerts_enabled=False,
+        account_rotation_enabled=False,
+        rotation_accounts="",
+        rotation_interval_checks=1,
     )
     defaults.update(overrides)
     return CheckerConfig(**defaults)
@@ -389,6 +399,68 @@ class TestConfigNewFields:
     def test_preferred_time_default(self):
         cfg = _make_config()
         assert cfg.preferred_time == "any"
+
+    def test_safety_and_test_mode_defaults(self):
+        cfg = _make_config()
+        assert cfg.test_mode is False
+        assert cfg.safety_first_mode is False
+        assert cfg.safety_first_min_interval_minutes == 10
+        assert cfg.excluded_date_ranges == ""
+
+
+class TestExcludedDateRanges:
+    def _make_checker(self, **cfg_kw):
+        from visa_appointment_checker import VisaAppointmentChecker
+
+        cfg = _make_config(**cfg_kw)
+        with patch.object(VisaAppointmentChecker, "__init__", lambda self, *a, **k: None):
+            checker = VisaAppointmentChecker.__new__(VisaAppointmentChecker)
+        checker.cfg = cfg
+        checker._excluded_windows = []
+        checker._slot_ledger = MagicMock()
+        checker._slot_ledger.record_slot.return_value = True
+        checker._record_availability_event = MagicMock()
+        checker._audio_alert = MagicMock()
+        return checker
+
+    @patch("visa_appointment_checker.send_notification")
+    def test_excluded_slots_do_not_notify(self, mock_notify):
+        checker = self._make_checker(
+            current_appointment_date="2025-12-01",
+            start_date="2025-06-01",
+            end_date="2025-12-31",
+            min_improvement_days=1,
+            excluded_date_ranges="2025-10-01:2025-10-15",
+        )
+        checker._parse_excluded_windows()
+        checker._parse_calendar_date = lambda slot: datetime(2025, 10, 10)
+        checker._evaluate_available_dates(["October 2025 10"])
+        mock_notify.assert_not_called()
+
+
+class TestSafetyFirstMode:
+    def _make_checker(self, **cfg_kw):
+        from visa_appointment_checker import VisaAppointmentChecker
+
+        cfg = _make_config(**cfg_kw)
+        with patch.object(VisaAppointmentChecker, "__init__", lambda self, *a, **k: None):
+            checker = VisaAppointmentChecker.__new__(VisaAppointmentChecker)
+        checker.cfg = cfg
+        return checker
+
+    @patch("visa_appointment_checker.compute_sleep_seconds_external", return_value=(120, None))
+    def test_compute_sleep_seconds_enforces_min_interval(self, _mock_compute):
+        checker = self._make_checker(safety_first_mode=True, safety_first_min_interval_minutes=10)
+        checker._calculate_optimal_frequency = MagicMock(return_value=2.0)
+        checker._calculate_dynamic_backoff = MagicMock(return_value=3)
+        checker._is_prime_time = MagicMock(return_value=True)
+        checker._backoff_until = None
+        sleep = checker.compute_sleep_seconds(3)
+        assert sleep >= 600
+
+    def test_burst_disabled_when_safety_first_enabled(self):
+        checker = self._make_checker(safety_first_mode=True, burst_mode_enabled=True)
+        assert checker._should_use_burst_mode() is False
 
 
 # =========================================================================

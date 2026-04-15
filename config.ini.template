@@ -73,6 +73,12 @@ telegram_chat_id =
 # Slack: https://hooks.slack.com/services/...
 webhook_url =
 
+# Pushover instant mobile notifications
+# Create an app token at https://pushover.net/apps/build
+# Get your user key at https://pushover.net/
+pushover_app_token =
+pushover_user_key =
+
 # Auto-book time preference: any, morning, afternoon, evening
 preferred_time = any
 
@@ -81,6 +87,25 @@ max_requests_per_hour = 120
 
 # Slot ledger TTL in hours (re-detect slots after this period)
 slot_ttl_hours = 24
+
+# Dedicated safety test mode (verifies authenticated flow, no slot probing/booking)
+test_mode = False
+
+# Complex date exclusions: up to 9 ranges, separated by semicolons
+# Format: YYYY-MM-DD:YYYY-MM-DD;YYYY-MM-DD:YYYY-MM-DD
+excluded_date_ranges =
+
+# Safety-first mode (disables burst mode and enforces conservative interval)
+safety_first_mode = False
+safety_first_min_interval_minutes = 10
+
+# Audio alerts for slot detections / manual intervention events
+audio_alerts_enabled = False
+
+# Multi-account rotation (format: email|password;email|password)
+account_rotation_enabled = False
+rotation_accounts =
+rotation_interval_checks = 1
 
 # Performance Optimization Settings (recommended defaults)
 driver_restart_checks = 50

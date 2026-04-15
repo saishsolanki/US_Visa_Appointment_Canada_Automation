@@ -115,12 +115,23 @@ class CheckerConfig:
     telegram_bot_token: str
     telegram_chat_id: str
     webhook_url: str
+    pushover_app_token: str
+    pushover_user_key: str
     # Time & rate preferences
     preferred_time: str
     max_requests_per_hour: int
     max_api_requests_per_hour: int
     max_ui_navigations_per_hour: int
     slot_ttl_hours: int
+    # Safety and advanced behaviors
+    test_mode: bool
+    excluded_date_ranges: str
+    safety_first_mode: bool
+    safety_first_min_interval_minutes: int
+    audio_alerts_enabled: bool
+    account_rotation_enabled: bool
+    rotation_accounts: str
+    rotation_interval_checks: int
 
     @classmethod
     def load(cls, path: str = "config.ini") -> "CheckerConfig":
@@ -246,6 +257,8 @@ class CheckerConfig:
             telegram_bot_token=_get("TELEGRAM_BOT_TOKEN", ""),
             telegram_chat_id=_get("TELEGRAM_CHAT_ID", ""),
             webhook_url=_get("WEBHOOK_URL", ""),
+            pushover_app_token=_get("PUSHOVER_APP_TOKEN", ""),
+            pushover_user_key=_get("PUSHOVER_USER_KEY", ""),
             # Time & rate preferences
             preferred_time=_get("PREFERRED_TIME", "any"),
             max_requests_per_hour=max(0, _get_int("MAX_REQUESTS_PER_HOUR", 120)),
@@ -258,6 +271,15 @@ class CheckerConfig:
             ),
             max_ui_navigations_per_hour=max(0, _get_int("MAX_UI_NAVIGATIONS_PER_HOUR", 60)),
             slot_ttl_hours=max(1, _get_int("SLOT_TTL_HOURS", 24)),
+            # Safety and advanced behaviors
+            test_mode=_to_bool(_get("TEST_MODE", "False")),
+            excluded_date_ranges=_get("EXCLUDED_DATE_RANGES", ""),
+            safety_first_mode=_to_bool(_get("SAFETY_FIRST_MODE", "False")),
+            safety_first_min_interval_minutes=max(1, _get_int("SAFETY_FIRST_MIN_INTERVAL_MINUTES", 10)),
+            audio_alerts_enabled=_to_bool(_get("AUDIO_ALERTS_ENABLED", "False")),
+            account_rotation_enabled=_to_bool(_get("ACCOUNT_ROTATION_ENABLED", "False")),
+            rotation_accounts=_get("ROTATION_ACCOUNTS", ""),
+            rotation_interval_checks=max(1, _get_int("ROTATION_INTERVAL_CHECKS", 1)),
         )
 
     def is_smtp_configured(self) -> bool:
@@ -280,10 +302,11 @@ class CheckerConfig:
     def masked_summary(self) -> str:
         tg = "on" if self.telegram_bot_token and self.telegram_chat_id else "off"
         wh = "on" if self.webhook_url else "off"
+        po = "on" if self.pushover_app_token and self.pushover_user_key else "off"
         return (
             f"email={self._mask(self.email)} | location={self.location} | "
             f"notify={self._mask(self.notify_email)} | auto_book={self.auto_book} | "
-            f"telegram={tg} | webhook={wh} | "
+            f"telegram={tg} | webhook={wh} | pushover={po} | "
             f"abort_on_captcha={self.abort_on_captcha}"
         )
 
@@ -776,8 +799,11 @@ class VisaAppointmentChecker:
         self._availability_history: List[Dict[str, Any]] = []
         self._pattern_file = Path("appointment_patterns.json")
         self._prime_time_windows: List[Tuple[int, int]] = []
+        self._excluded_windows: List[Tuple[datetime, datetime]] = []
         self._burst_mode_active = False
         self._slot_ledger = SlotLedger()
+        self._rotation_accounts: List[Tuple[str, str]] = []
+        self._rotation_index = 0
 
         # API fast-path (P1.1 / P1.2)
         self._schedule_id: Optional[str] = None
@@ -812,6 +838,8 @@ class VisaAppointmentChecker:
         
         # Initialize strategic components
         self._parse_prime_time_windows()
+        self._parse_excluded_windows()
+        self._initialize_account_rotation()
         if cfg.pattern_learning_enabled:
             self._load_patterns()
         
@@ -910,6 +938,99 @@ class VisaAppointmentChecker:
             return sid
         return self._schedule_id
 
+    def _parse_excluded_windows(self) -> None:
+        """Parse excluded date windows from config as semicolon-separated ranges.
+
+        Accepted entry formats:
+        - YYYY-MM-DD:YYYY-MM-DD
+        - YYYY-MM-DD to YYYY-MM-DD
+        """
+        self._excluded_windows = []
+        raw = (self.cfg.excluded_date_ranges or "").strip()
+        if not raw:
+            return
+
+        chunks = [c.strip() for c in raw.replace("\n", ";").split(";") if c.strip()]
+        if len(chunks) > 9:
+            chunks = chunks[:9]
+            logging.warning("Only first 9 exclusion windows are used")
+
+        for chunk in chunks:
+            token = chunk.replace(" to ", ":")
+            if ":" not in token:
+                logging.warning("Skipping invalid exclusion window: %s", chunk)
+                continue
+            start_raw, end_raw = [part.strip() for part in token.split(":", 1)]
+            try:
+                start_dt = datetime.strptime(start_raw, "%Y-%m-%d")
+                end_dt = datetime.strptime(end_raw, "%Y-%m-%d")
+            except ValueError:
+                logging.warning("Skipping invalid exclusion date format: %s", chunk)
+                continue
+            if start_dt > end_dt:
+                start_dt, end_dt = end_dt, start_dt
+            self._excluded_windows.append((start_dt, end_dt))
+
+        if self._excluded_windows:
+            logging.info("Configured %d exclusion window(s)", len(self._excluded_windows))
+
+    def _is_excluded_date(self, date_value: datetime) -> bool:
+        for start_dt, end_dt in self._excluded_windows:
+            if start_dt <= date_value <= end_dt:
+                return True
+        return False
+
+    def _initialize_account_rotation(self) -> None:
+        self._rotation_accounts = []
+        primary = (self.cfg.email.strip(), self.cfg.password)
+        if primary[0] and primary[1]:
+            self._rotation_accounts.append(primary)
+
+        raw = (self.cfg.rotation_accounts or "").strip()
+        if raw:
+            for entry in [e.strip() for e in raw.split(";") if e.strip()]:
+                if "|" in entry:
+                    email, pwd = entry.split("|", 1)
+                elif ":" in entry:
+                    email, pwd = entry.split(":", 1)
+                else:
+                    logging.warning("Skipping invalid rotation account entry: %s", entry)
+                    continue
+                pair = (email.strip(), pwd.strip())
+                if pair[0] and pair[1] and pair not in self._rotation_accounts:
+                    self._rotation_accounts.append(pair)
+
+        self._rotation_index = 0
+        if self.cfg.account_rotation_enabled and len(self._rotation_accounts) > 1:
+            logging.info("Account rotation enabled with %d accounts", len(self._rotation_accounts))
+
+    def _rotate_account_if_needed(self, check_count: int) -> None:
+        if not self.cfg.account_rotation_enabled:
+            return
+        if len(self._rotation_accounts) < 2:
+            return
+        if check_count % max(1, self.cfg.rotation_interval_checks) != 0:
+            return
+
+        self._rotation_index = (self._rotation_index + 1) % len(self._rotation_accounts)
+        next_email, next_password = self._rotation_accounts[self._rotation_index]
+        self.cfg.email = next_email
+        self.cfg.password = next_password
+        self._api_session = None
+        self._api_session_cookies_hash = None
+        self.reset_driver()
+        logging.info("Rotated active AIS account to %s", self.cfg._mask(next_email))
+
+    def _audio_alert(self, reason: str) -> None:
+        if not self.cfg.audio_alerts_enabled:
+            return
+        try:
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+        except Exception:
+            print("\a", end="", flush=True)
+        logging.info("Audio alert triggered: %s", reason)
+
     def _parse_prime_time_windows(self) -> None:
         """Parse prime time configuration into time windows"""
         try:
@@ -963,6 +1084,8 @@ class VisaAppointmentChecker:
 
     def _should_use_burst_mode(self) -> bool:
         """Enable burst mode during high-probability windows"""
+        if self.cfg.safety_first_mode:
+            return False
         if not self.cfg.burst_mode_enabled:
             return False
             
@@ -1330,6 +1453,10 @@ class VisaAppointmentChecker:
 
                 self._slot_ledger.record_slot(date_str, location)
 
+                if self._is_excluded_date(parsed):
+                    logging.debug("Skipping excluded API date %s at %s", date_str, location)
+                    continue
+
                 if start_date <= parsed <= end_date and parsed < current_date:
                     days_earlier = (current_date - parsed).days
                     if days_earlier >= self.cfg.min_improvement_days:
@@ -1354,6 +1481,7 @@ class VisaAppointmentChecker:
 
         logging.info("🎉 API SCAN: Earlier appointment at %s: %s (%d days earlier)",
                      best_location, best_date.strftime("%Y-%m-%d"), days_earlier)
+        self._audio_alert("earlier appointment found via API")
 
         self._record_availability_event("earlier_date_found")
 
@@ -1478,6 +1606,8 @@ class VisaAppointmentChecker:
                 self.cfg = new_cfg
                 self._config_mtime = mtime
                 self._parse_prime_time_windows()
+                self._parse_excluded_windows()
+                self._initialize_account_rotation()
                 logging.info("✅ Configuration reloaded successfully")
                 if new_cfg.auto_book != old_auto_book:
                     logging.info("Auto-book changed: %s → %s", old_auto_book, new_cfg.auto_book)
@@ -1511,6 +1641,24 @@ class VisaAppointmentChecker:
             return "unknown"
         except Exception:
             return "unknown"
+
+    def _run_test_mode_check(self) -> None:
+        """Validate authenticated flow without probing/booking appointment slots."""
+        on_form = self._ensure_on_appointment_form(max_wait=5)
+        if on_form:
+            logging.info("🧪 Test mode: authenticated and appointment form detected")
+        else:
+            logging.warning("🧪 Test mode: authenticated but appointment form not detected")
+        send_notification(
+            self.cfg,
+            "🧪 Visa Checker Test Mode Report",
+            (
+                "Test mode check completed.\n"
+                f"Authenticated account: {self.cfg._mask(self.cfg.email)}\n"
+                f"Appointment form detected: {'Yes' if on_form else 'No'}\n"
+                "No availability probing or booking actions were executed."
+            ),
+        )
 
     def perform_check(self) -> None:
         start_time = datetime.now()
@@ -1572,6 +1720,10 @@ class VisaAppointmentChecker:
 
             # Extract schedule_id from current URL for future API fast-path
             self._extract_schedule_id(driver.current_url)
+
+            if self.cfg.test_mode:
+                self._run_test_mode_check()
+                return
 
             # Now check availability after we're properly navigated
             self._check_consulate_availability()
@@ -2317,6 +2469,10 @@ class VisaAppointmentChecker:
             slot_key = parsed_date.strftime("%Y-%m-%d")
             self._slot_ledger.record_slot(slot_key, self.cfg.location)
 
+            if self._is_excluded_date(parsed_date):
+                logging.debug("Skipping excluded slot date %s", parsed_date.strftime("%Y-%m-%d"))
+                continue
+
             # Check if date is within user's preferred range
             if start_date <= parsed_date <= end_date:
                 dates_in_range.append(parsed_date)
@@ -2342,6 +2498,7 @@ class VisaAppointmentChecker:
             
             logging.info("🎉 EARLIER APPOINTMENT FOUND! %s (%.0f days earlier than current)", 
                         earliest.strftime("%Y-%m-%d"), days_earlier)
+            self._audio_alert("earlier appointment found")
             
             # Record this availability event
             self._record_availability_event("earlier_date_found")
@@ -3018,6 +3175,7 @@ class VisaAppointmentChecker:
 
         if captcha_iframes or captcha_widgets or page_mentions_challenge:
             logging.warning("Captcha challenge detected on page; automation paused.")
+            self._audio_alert("captcha/manual intervention required")
             self._capture_artifact("captcha_detected")
             self._schedule_backoff()
             message = (
@@ -3097,6 +3255,7 @@ class VisaAppointmentChecker:
             consecutive,
             backoff_minutes,
         )
+        self._audio_alert("scheduling limit warning")
 
         # Notify the user on the first occurrence (and every 3rd thereafter)
         if consecutive == 1 or consecutive % 3 == 0:
@@ -3338,6 +3497,9 @@ class VisaAppointmentChecker:
             is_prime_time=self._is_prime_time(),
             backoff_until=self._backoff_until,
         )
+        if self.cfg.safety_first_mode:
+            min_interval = max(1, self.cfg.safety_first_min_interval_minutes) * 60
+            sleep_seconds = max(sleep_seconds, min_interval)
         return sleep_seconds
 
     def _track_performance(self, operation: str, duration: float):
@@ -3529,9 +3691,14 @@ def main() -> None:
     print(f"📨 Telegram notifications: {'Enabled' if tg_on else 'Disabled'}")
     wh_on = bool(cfg.webhook_url)
     print(f"🔗 Webhook notifications: {'Enabled' if wh_on else 'Disabled'}")
+    po_on = bool(cfg.pushover_app_token and cfg.pushover_user_key)
+    print(f"📱 Pushover notifications: {'Enabled' if po_on else 'Disabled'}")
     print(f"🤖 Auto-book: {'Enabled' if cfg.auto_book else 'Disabled'}")
     if cfg.auto_book:
         print(f"   Dry-run: {'Yes' if cfg.auto_book_dry_run else 'No'} | Preferred time: {cfg.preferred_time}")
+    print(f"🧪 Test mode: {'Enabled' if cfg.test_mode else 'Disabled'}")
+    print(f"🛡️ Safety-first mode: {'Enabled' if cfg.safety_first_mode else 'Disabled'}")
+    print(f"🔊 Audio alerts: {'Enabled' if cfg.audio_alerts_enabled else 'Disabled'}")
     print(f"⏰ Timezone: {cfg.timezone}")
     print(f"🕶️ Headless mode: {'On' if headless else 'Off'}")
     print("🔄 Config hot-reload: Enabled")
@@ -3557,6 +3724,7 @@ def main() -> None:
 
             # ---- Config hot-reload (P3.2) ----
             checker._check_config_reload()
+            checker._rotate_account_if_needed(check_count)
 
             # ---- Network pre-check ----
             # If we are in a network-backoff window, wait it out before

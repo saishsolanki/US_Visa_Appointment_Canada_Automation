@@ -11,8 +11,13 @@ This comprehensive automation tool helps Canadian users find earlier US visa app
 - **Configurable Check Frequency**: Set custom intervals (recommended: 5-15 minutes)
 - **Date Range Filtering**: Only accepts appointments within your preferred date range
 - **Location-Specific**: Monitors specific embassy/consulate locations
-- **Email Notifications**: Instant alerts via Gmail SMTP (free)
+- **Multi-Channel Notifications**: SMTP email + Telegram + webhook + Pushover push alerts
 - **Optional Auto-Booking**: Automatically book found appointments (use with caution)
+- **Dedicated Test Mode**: Validate login/schedule access without probing or booking slots
+- **Complex Date Exclusions**: Exclude up to 9 date windows from matching logic
+- **Safety-First Mode**: Conservative polling profile for lower anti-bot risk
+- **Multi-Account Rotation**: Rotate AIS credentials between checks
+- **Audio Alerts**: Beep on slot discovery or manual-intervention events
 - **Headless Operation**: Runs in background without interfering with your work (toggle with `--no-headless` when you need to watch it)
 - **Resilient Login Automation**: Smarter selectors, iframe handling, and overlay dismissal keep pace with AIS UI tweaks
 - **Advanced Session Management**: Intelligent session persistence with validation and automatic recovery
@@ -250,6 +255,23 @@ NOTIFY_EMAIL = your_email@gmail.com
 
 # Auto-booking (use with caution)
 AUTO_BOOK = False
+
+# Test mode + date exclusions
+TEST_MODE = False
+EXCLUDED_DATE_RANGES =
+
+# Safety-first polling
+SAFETY_FIRST_MODE = False
+SAFETY_FIRST_MIN_INTERVAL_MINUTES = 10
+
+# Optional mobile push (Pushover)
+PUSHOVER_APP_TOKEN =
+PUSHOVER_USER_KEY =
+
+# Optional account rotation (email|password;email|password)
+ACCOUNT_ROTATION_ENABLED = False
+ROTATION_ACCOUNTS =
+ROTATION_INTERVAL_CHECKS = 1
 
 # Performance Optimization Settings (recommended defaults)
 DRIVER_RESTART_CHECKS = 50

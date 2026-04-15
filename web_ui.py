@@ -26,9 +26,13 @@ CONFIG_KEYS = [
     'NOTIFY_EMAIL', 'AUTO_BOOK', 'AUTO_BOOK_DRY_RUN',
     'AUTO_BOOK_CONFIRMATION_WAIT_SECONDS', 'MIN_IMPROVEMENT_DAYS',
     'TIMEZONE', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID',
-    'WEBHOOK_URL', 'PREFERRED_TIME', 'MAX_REQUESTS_PER_HOUR',
+    'WEBHOOK_URL', 'PUSHOVER_APP_TOKEN', 'PUSHOVER_USER_KEY',
+    'PREFERRED_TIME', 'MAX_REQUESTS_PER_HOUR',
     'SLOT_TTL_HOURS', 'DRIVER_RESTART_CHECKS',
-    'MAX_RETRY_ATTEMPTS', 'SLEEP_JITTER_SECONDS'
+    'MAX_RETRY_ATTEMPTS', 'SLEEP_JITTER_SECONDS', 'TEST_MODE',
+    'EXCLUDED_DATE_RANGES', 'SAFETY_FIRST_MODE', 'SAFETY_FIRST_MIN_INTERVAL_MINUTES',
+    'AUDIO_ALERTS_ENABLED', 'ACCOUNT_ROTATION_ENABLED', 'ROTATION_ACCOUNTS',
+    'ROTATION_INTERVAL_CHECKS'
 ]
 
 @app.route('/', methods=['GET', 'POST'])
@@ -52,7 +56,11 @@ def index():
     if request.method == 'POST':
         # DEFAULT section is automatically available in configparser
         for key in CONFIG_KEYS:
-            if key in ['AUTO_BOOK', 'BURST_MODE_ENABLED', 'MULTI_LOCATION_CHECK', 'PATTERN_LEARNING_ENABLED', 'AUTO_BOOK_DRY_RUN']:
+            if key in [
+                'AUTO_BOOK', 'BURST_MODE_ENABLED', 'MULTI_LOCATION_CHECK',
+                'PATTERN_LEARNING_ENABLED', 'AUTO_BOOK_DRY_RUN', 'TEST_MODE',
+                'SAFETY_FIRST_MODE', 'AUDIO_ALERTS_ENABLED', 'ACCOUNT_ROTATION_ENABLED',
+            ]:
                 value = 'True' if request.form.get(key) else 'False'
             else:
                 value = request.form.get(key, '')
@@ -85,12 +93,22 @@ def index():
         'TELEGRAM_BOT_TOKEN': '',
         'TELEGRAM_CHAT_ID': '',
         'WEBHOOK_URL': '',
+        'PUSHOVER_APP_TOKEN': '',
+        'PUSHOVER_USER_KEY': '',
         'PREFERRED_TIME': 'any',
         'MAX_REQUESTS_PER_HOUR': '120',
         'SLOT_TTL_HOURS': '24',
         'DRIVER_RESTART_CHECKS': '50',
         'MAX_RETRY_ATTEMPTS': '2',
-        'SLEEP_JITTER_SECONDS': '60'
+        'SLEEP_JITTER_SECONDS': '60',
+        'TEST_MODE': 'False',
+        'EXCLUDED_DATE_RANGES': '',
+        'SAFETY_FIRST_MODE': 'False',
+        'SAFETY_FIRST_MIN_INTERVAL_MINUTES': '10',
+        'AUDIO_ALERTS_ENABLED': 'False',
+        'ACCOUNT_ROTATION_ENABLED': 'False',
+        'ROTATION_ACCOUNTS': '',
+        'ROTATION_INTERVAL_CHECKS': '1',
     }
     
     current = {}

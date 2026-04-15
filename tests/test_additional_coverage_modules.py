@@ -185,11 +185,23 @@ def test_send_all_notifications_aggregates_channels(monkeypatch: pytest.MonkeyPa
         telegram_bot_token="tok",
         telegram_chat_id="chat",
         webhook_url="https://example.com/hook",
+        pushover_app_token="app",
+        pushover_user_key="user",
     )
     monkeypatch.setattr(notification_utils, "send_notification", lambda *a, **k: False)
     monkeypatch.setattr(notification_utils, "send_telegram_notification", lambda *a, **k: True)
     monkeypatch.setattr(notification_utils, "send_webhook_notification", lambda *a, **k: False)
+    monkeypatch.setattr(notification_utils, "send_pushover_notification", lambda *a, **k: False)
     assert notification_utils.send_all_notifications(cfg, "Sub", "Msg") is True
+
+
+def test_send_pushover_notification_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    ok_resp = MagicMock()
+    ok_resp.status = 200
+    ok_resp.__enter__.return_value = ok_resp
+    ok_resp.__exit__.return_value = False
+    monkeypatch.setattr(notification_utils.urllib.request, "urlopen", lambda *a, **k: ok_resp)
+    assert notification_utils.send_pushover_notification("app", "user", "S", "M") is True
 
 
 def test_build_chrome_options_modes_and_headless(monkeypatch: pytest.MonkeyPatch) -> None:
