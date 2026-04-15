@@ -27,3 +27,7 @@ appointment_patterns.json
 
 # Database files
 *.db
+
+# Raw HTTP captures (may contain credentials/session tokens)
+visa.txt
+*.burp

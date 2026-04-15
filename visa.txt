@@ -1,28 +1,7 @@
-<?xml version="1.1"?>
-<!-- NOTE: Any NULL bytes in requests and responses are preserved within this output, even though this strictly breaks the XML syntax. If your XML parser rejects the NULL bytes then you will need to remove or replace these bytes before parsing. Alternatively, you can use the option to base64-encode requests and responses. -->
-<!DOCTYPE items [
-<!ELEMENT items (item*)>
-<!ATTLIST items burpVersion CDATA "">
-<!ATTLIST items exportTime CDATA "">
-<!ELEMENT item (time, url, host, port, protocol, method, path, extension, request, status, responselength, mimetype, response, comment)>
-<!ELEMENT time (#PCDATA)>
-<!ELEMENT url (#PCDATA)>
-<!ELEMENT host (#PCDATA)>
-<!ATTLIST host ip CDATA "">
-<!ELEMENT port (#PCDATA)>
-<!ELEMENT protocol (#PCDATA)>
-<!ELEMENT method (#PCDATA)>
-<!ELEMENT path (#PCDATA)>
-<!ELEMENT extension (#PCDATA)>
-<!ELEMENT request (#PCDATA)>
-<!ATTLIST request base64 (true|false) "false">
-<!ELEMENT status (#PCDATA)>
-<!ELEMENT responselength (#PCDATA)>
-<!ELEMENT mimetype (#PCDATA)>
-<!ELEMENT response (#PCDATA)>
-<!ATTLIST response base64 (true|false) "false">
-<!ELEMENT comment (#PCDATA)>
-]>
+This file contained raw HTTP traffic captures (Burp Suite export) and has been cleared.
+It is now listed in .gitignore so it will not be re-tracked.
+Do not commit or share HTTP capture files – they may contain session cookies and credentials.
+
 <items burpVersion="2026.1.4" exportTime="Fri Feb 20 17:48:00 EST 2026">
   <item>
     <time>Fri Feb 20 17:43:12 EST 2026</time>
