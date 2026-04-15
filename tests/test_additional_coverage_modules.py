@@ -246,6 +246,15 @@ smtp_port = 587
             "smtp-user@example.com",  # SMTP_USER
             "",  # NOTIFY_EMAIL -> auto use smtp_user
             "False",  # AUTO_BOOK
+            "",  # TEST_MODE
+            "",  # EXCLUDED_DATE_RANGES
+            "",  # SAFETY_FIRST_MODE
+            "",  # AUDIO_ALERTS_ENABLED
+            "",  # PUSHOVER_APP_TOKEN
+            "",  # PUSHOVER_USER_KEY
+            "",  # ACCOUNT_ROTATION_ENABLED
+            "",  # ROTATION_ACCOUNTS
+            "",  # ROTATION_INTERVAL_CHECKS
         ]
     )
     secrets = iter(["secret-pass", "smtp-pass"])

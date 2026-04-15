@@ -975,7 +975,7 @@ class VisaAppointmentChecker:
             logging.info("Configured %d exclusion window(s)", len(self._excluded_windows))
 
     def _is_excluded_date(self, date_value: datetime) -> bool:
-        for start_dt, end_dt in self._excluded_windows:
+        for start_dt, end_dt in getattr(self, "_excluded_windows", []):
             if start_dt <= date_value <= end_dt:
                 return True
         return False
