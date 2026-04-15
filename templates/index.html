@@ -183,6 +183,14 @@
         <input type="url" id="WEBHOOK_URL" name="WEBHOOK_URL" value="{{ current.WEBHOOK_URL }}" placeholder="https://discord.com/api/webhooks/...">
         <small>Auto-detects Discord & Slack webhooks. Leave blank to disable</small>
 
+        <label for="PUSHOVER_APP_TOKEN">Pushover App Token:</label>
+        <input type="password" id="PUSHOVER_APP_TOKEN" name="PUSHOVER_APP_TOKEN" value="{{ current.PUSHOVER_APP_TOKEN }}" placeholder="a1b2c3...">
+        <small>Create at pushover.net/apps/build for instant mobile push notifications</small>
+
+        <label for="PUSHOVER_USER_KEY">Pushover User Key:</label>
+        <input type="password" id="PUSHOVER_USER_KEY" name="PUSHOVER_USER_KEY" value="{{ current.PUSHOVER_USER_KEY }}" placeholder="uQiRzpo4DXghD...">
+        <small>Your personal recipient key from pushover.net</small>
+
         <h2 style="color: #F27D42; border-bottom: 2px solid #F27D42; padding-bottom: 5px;">🎯 Auto-Book Preferences</h2>
 
         <label for="PREFERRED_TIME">Preferred Appointment Time:</label>
@@ -215,6 +223,42 @@
         <label for="SLEEP_JITTER_SECONDS">Sleep Jitter (seconds):</label>
         <input type="number" id="SLEEP_JITTER_SECONDS" name="SLEEP_JITTER_SECONDS" value="{{ current.SLEEP_JITTER_SECONDS }}" placeholder="60">
         <small>Random variation in sleep timing to appear more human-like (recommended: 60)</small>
+
+        <label for="TEST_MODE" class="checkbox-label">
+            <input type="checkbox" id="TEST_MODE" name="TEST_MODE" {% if current.TEST_MODE == 'True' %}checked{% endif %}> 🧪 Dedicated Test Mode
+        </label>
+        <small>Verifies login + scheduling-page access without probing or booking slots</small>
+
+        <label for="EXCLUDED_DATE_RANGES">Excluded Date Ranges:</label>
+        <input type="text" id="EXCLUDED_DATE_RANGES" name="EXCLUDED_DATE_RANGES" value="{{ current.EXCLUDED_DATE_RANGES }}" placeholder="2026-07-01:2026-07-15;2026-09-01:2026-09-10">
+        <small>Up to 9 semicolon-separated ranges in YYYY-MM-DD:YYYY-MM-DD format</small>
+
+        <label for="SAFETY_FIRST_MODE" class="checkbox-label">
+            <input type="checkbox" id="SAFETY_FIRST_MODE" name="SAFETY_FIRST_MODE" {% if current.SAFETY_FIRST_MODE == 'True' %}checked{% endif %}> 🛡️ Safety-First Mode
+        </label>
+        <small>Disables burst mode and enforces conservative polling intervals</small>
+
+        <label for="SAFETY_FIRST_MIN_INTERVAL_MINUTES">Safety Min Interval (minutes):</label>
+        <input type="number" id="SAFETY_FIRST_MIN_INTERVAL_MINUTES" name="SAFETY_FIRST_MIN_INTERVAL_MINUTES" value="{{ current.SAFETY_FIRST_MIN_INTERVAL_MINUTES }}" placeholder="10">
+        <small>Minimum delay when Safety-First mode is enabled (recommended: 10)</small>
+
+        <label for="AUDIO_ALERTS_ENABLED" class="checkbox-label">
+            <input type="checkbox" id="AUDIO_ALERTS_ENABLED" name="AUDIO_ALERTS_ENABLED" {% if current.AUDIO_ALERTS_ENABLED == 'True' %}checked{% endif %}> 🔊 Audio Alerts
+        </label>
+        <small>Play a beep when slots are found or manual intervention is required</small>
+
+        <label for="ACCOUNT_ROTATION_ENABLED" class="checkbox-label">
+            <input type="checkbox" id="ACCOUNT_ROTATION_ENABLED" name="ACCOUNT_ROTATION_ENABLED" {% if current.ACCOUNT_ROTATION_ENABLED == 'True' %}checked{% endif %}> 🔁 Multi-Account Rotation
+        </label>
+        <small>Rotate across multiple AIS credentials to reduce single-account throttling risk</small>
+
+        <label for="ROTATION_ACCOUNTS">Rotation Accounts:</label>
+        <input type="text" id="ROTATION_ACCOUNTS" name="ROTATION_ACCOUNTS" value="{{ current.ROTATION_ACCOUNTS }}" placeholder="email1@example.com|password1;email2@example.com|password2">
+        <small>Semicolon-separated accounts in email|password format</small>
+
+        <label for="ROTATION_INTERVAL_CHECKS">Rotation Interval (checks):</label>
+        <input type="number" id="ROTATION_INTERVAL_CHECKS" name="ROTATION_INTERVAL_CHECKS" value="{{ current.ROTATION_INTERVAL_CHECKS }}" placeholder="1">
+        <small>Rotate account every N checks when rotation is enabled</small>
 
         <div style="background-color: #f0f8ff; border-left: 4px solid #1e90ff; padding: 15px; margin: 20px 0;">
             <h3 style="margin-top: 0; color: #1e90ff;">🚀 Strategic Optimization Benefits</h3>

@@ -66,6 +66,15 @@ def run_cli_setup_wizard(config_path: str = "config.ini", template_path: str = "
     if not _get("NOTIFY_EMAIL") and smtp_user:
         _set("NOTIFY_EMAIL", smtp_user)
     _prompt("AUTO_BOOK", "Auto-book when eligible appointment found? (True/False)")
+    _prompt("TEST_MODE", "Run in dedicated safe test mode? (True/False)", required=False)
+    _prompt("EXCLUDED_DATE_RANGES", "Excluded date ranges (YYYY-MM-DD:YYYY-MM-DD;...)", required=False)
+    _prompt("SAFETY_FIRST_MODE", "Enable safety-first conservative polling mode? (True/False)", required=False)
+    _prompt("AUDIO_ALERTS_ENABLED", "Enable audio alerts? (True/False)", required=False)
+    _prompt("PUSHOVER_APP_TOKEN", "Pushover app token (optional)", required=False)
+    _prompt("PUSHOVER_USER_KEY", "Pushover user key (optional)", required=False)
+    _prompt("ACCOUNT_ROTATION_ENABLED", "Enable multi-account rotation? (True/False)", required=False)
+    _prompt("ROTATION_ACCOUNTS", "Rotation accounts email|password;email|password (optional)", required=False)
+    _prompt("ROTATION_INTERVAL_CHECKS", "Rotate account every N checks", required=False)
 
     with open(config_path, "w", encoding="utf-8") as handle:
         parser.write(handle)
