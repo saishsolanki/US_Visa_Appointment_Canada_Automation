@@ -92,6 +92,14 @@ def _make_config(**overrides):  # type: ignore[override]
         account_rotation_enabled=False,
         rotation_accounts="",
         rotation_interval_checks=1,
+        vpn_provider="none",
+        vpn_cli_path="protonvpn",
+        vpn_server="",
+        vpn_country="",
+        vpn_require_connected=False,
+        vpn_rotate_on_captcha=True,
+        vpn_reconnect_on_network_error=True,
+        vpn_min_session_minutes=10,
     )
     defaults.update(overrides)
     return CheckerConfig(**defaults)

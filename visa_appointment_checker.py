@@ -49,6 +49,7 @@ from notification_utils import send_all_notifications
 from scheduling_utils import compute_sleep_seconds as compute_sleep_seconds_external
 from selector_registry import apply_selector_overrides
 from slot_ledger import SlotLedger
+from vpn_utils import ProtonVpnManager
 
 LOGIN_URL = "https://ais.usvisa-info.com/en-ca/niv/users/sign_in"
 RESCHEDULE_URLS = [
@@ -141,6 +142,15 @@ class CheckerConfig:
     account_rotation_enabled: bool
     rotation_accounts: str
     rotation_interval_checks: int
+    # VPN integration
+    vpn_provider: str
+    vpn_cli_path: str
+    vpn_server: str
+    vpn_country: str
+    vpn_require_connected: bool
+    vpn_rotate_on_captcha: bool
+    vpn_reconnect_on_network_error: bool
+    vpn_min_session_minutes: int
 
     @classmethod
     def load(cls, path: str = "config.ini") -> "CheckerConfig":
@@ -289,6 +299,15 @@ class CheckerConfig:
             account_rotation_enabled=_to_bool(_get("ACCOUNT_ROTATION_ENABLED", "False")),
             rotation_accounts=_get("ROTATION_ACCOUNTS", ""),
             rotation_interval_checks=max(1, _get_int("ROTATION_INTERVAL_CHECKS", 1)),
+            # VPN integration
+            vpn_provider=_get("VPN_PROVIDER", "none"),
+            vpn_cli_path=_get("VPN_CLI_PATH", "protonvpn"),
+            vpn_server=_get("VPN_SERVER", ""),
+            vpn_country=_get("VPN_COUNTRY", ""),
+            vpn_require_connected=_to_bool(_get("VPN_REQUIRE_CONNECTED", "False")),
+            vpn_rotate_on_captcha=_to_bool(_get("VPN_ROTATE_ON_CAPTCHA", "True")),
+            vpn_reconnect_on_network_error=_to_bool(_get("VPN_RECONNECT_ON_NETWORK_ERROR", "True")),
+            vpn_min_session_minutes=max(0, _get_int("VPN_MIN_SESSION_MINUTES", 10)),
         )
 
     def is_smtp_configured(self) -> bool:
@@ -312,11 +331,13 @@ class CheckerConfig:
         tg = "on" if self.telegram_bot_token and self.telegram_chat_id else "off"
         wh = "on" if self.webhook_url else "off"
         po = "on" if self.pushover_app_token and self.pushover_user_key else "off"
+        vpn = self.vpn_provider.lower()
+        vpn_state = vpn if vpn and vpn != "none" else "off"
         return (
             f"email={self._mask(self.email)} | location={self.location} | "
             f"notify={self._mask(self.notify_email)} | auto_book={self.auto_book} | "
             f"telegram={tg} | webhook={wh} | pushover={po} | "
-            f"abort_on_captcha={self.abort_on_captcha}"
+            f"vpn={vpn_state} | abort_on_captcha={self.abort_on_captcha}"
         )
 
 
@@ -814,6 +835,7 @@ class VisaAppointmentChecker:
         self._slot_ledger = SlotLedger()
         self._rotation_accounts: List[Tuple[str, str]] = []
         self._rotation_index = 0
+        self._vpn_manager: Optional[ProtonVpnManager] = None
 
         # API fast-path (P1.1 / P1.2)
         self._schedule_id: Optional[str] = None
@@ -850,6 +872,7 @@ class VisaAppointmentChecker:
         self._parse_prime_time_windows()
         self._parse_excluded_windows()
         self._initialize_account_rotation()
+        self._init_vpn_manager()
         if cfg.pattern_learning_enabled:
             self._load_patterns()
         
@@ -1020,6 +1043,27 @@ class VisaAppointmentChecker:
         self._rotation_index = 0
         if self.cfg.account_rotation_enabled and len(self._rotation_accounts) > 1:
             logging.info("Account rotation enabled with %d accounts", len(self._rotation_accounts))
+
+    def _init_vpn_manager(self) -> None:
+        provider = (self.cfg.vpn_provider or "").strip().lower()
+        if provider == "protonvpn":
+            self._vpn_manager = ProtonVpnManager(
+                cli_path=self.cfg.vpn_cli_path,
+                server=self.cfg.vpn_server,
+                country=self.cfg.vpn_country,
+                require_connected=self.cfg.vpn_require_connected,
+                min_session_minutes=self.cfg.vpn_min_session_minutes,
+                reconnect_on_network_error=self.cfg.vpn_reconnect_on_network_error,
+                rotate_on_captcha=self.cfg.vpn_rotate_on_captcha,
+            )
+            logging.info(
+                "Proton VPN control enabled (server=%s, country=%s, require_connected=%s)",
+                self.cfg.vpn_server or "fastest",
+                self.cfg.vpn_country or "auto",
+                self.cfg.vpn_require_connected,
+            )
+        else:
+            self._vpn_manager = None
 
     def _rotate_account_if_needed(self, check_count: int) -> None:
         if not self.cfg.account_rotation_enabled:
@@ -1628,6 +1672,7 @@ class VisaAppointmentChecker:
                 self._parse_prime_time_windows()
                 self._parse_excluded_windows()
                 self._initialize_account_rotation()
+                self._init_vpn_manager()
                 logging.info("✅ Configuration reloaded successfully")
                 if new_cfg.auto_book != old_auto_book:
                     logging.info("Auto-book changed: %s → %s", old_auto_book, new_cfg.auto_book)
@@ -3095,6 +3140,21 @@ class VisaAppointmentChecker:
         )
         return backoff_seconds
 
+    def _ensure_vpn_ready(self, reason: str) -> bool:
+        if not self._vpn_manager:
+            return True
+        return self._vpn_manager.ensure_connected(reason=reason)
+
+    def _handle_vpn_network_issue(self) -> None:
+        if not self._vpn_manager:
+            return
+        self._vpn_manager.handle_network_issue(reason="network error")
+
+    def _handle_vpn_captcha(self) -> None:
+        if not self._vpn_manager:
+            return
+        self._vpn_manager.handle_captcha_block()
+
     def _safe_get(self, url: str, *, attempts: Optional[int] = None, detect_captcha: bool = False) -> None:
         driver = self.ensure_driver()
         total_attempts = attempts or self.cfg.max_retry_attempts
@@ -3713,6 +3773,15 @@ def main() -> None:
     print(f"🔗 Webhook notifications: {'Enabled' if wh_on else 'Disabled'}")
     po_on = bool(cfg.pushover_app_token and cfg.pushover_user_key)
     print(f"📱 Pushover notifications: {'Enabled' if po_on else 'Disabled'}")
+    vpn_on = cfg.vpn_provider.lower() == "protonvpn"
+    if vpn_on:
+        vpn_target = cfg.vpn_server or (cfg.vpn_country or "fastest")
+        print(
+            f"🛡️ VPN: Proton VPN -> {vpn_target} "
+            f"(require_connected={cfg.vpn_require_connected})"
+        )
+    else:
+        print("🛡️ VPN: Disabled")
     print(f"🤖 Auto-book: {'Enabled' if cfg.auto_book else 'Disabled'}")
     if cfg.auto_book:
         print(f"   Dry-run: {'Yes' if cfg.auto_book_dry_run else 'No'} | Preferred time: {cfg.preferred_time}")
@@ -3762,6 +3831,14 @@ def main() -> None:
                     print(f"🌐 Still offline — extending backoff by {backoff}s")
                     continue
 
+            if not checker._ensure_vpn_ready(reason="pre-check"):
+                retry_secs = max(30, checker.cfg.retry_backoff_seconds)
+                print(
+                    f"🛡️ Proton VPN required but not connected — retrying in {retry_secs}s"
+                )
+                time.sleep(retry_secs)
+                continue
+
             print(f"\n🔄 Starting check #{check_count} at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
             print("-" * 30)
 
@@ -3780,12 +3857,14 @@ def main() -> None:
                 captcha_detected = True
                 # Captcha means we reached the server — network is fine
                 checker._record_network_success()
+                checker._handle_vpn_captcha()
             except Exception as exc:  # noqa: BLE001
                 print(f"❌ Check #{check_count} failed: {exc}")
                 if checker._is_network_error(exc):
                     network_error = True
                     backoff = checker._record_network_failure()
                     print(f"🌐 Network error detected — will retry in {backoff}s")
+                    checker._handle_vpn_network_issue()
 
             # Record stats for progress reporter
             if reporter:
