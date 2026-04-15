@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Update – US Visa Checker</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0d1117;
+            color: #c9d1d9;
+            min-height: 100vh;
+        }
+        header {
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+            padding: 0.75rem 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        header h1 { font-size: 1.1rem; color: #58a6ff; flex: 1; }
+        nav a {
+            color: #58a6ff;
+            text-decoration: none;
+            font-size: 0.9rem;
+            padding: 0.3rem 0.6rem;
+            border-radius: 5px;
+            border: 1px solid #30363d;
+        }
+        nav a:hover { background: #21262d; }
+        .content {
+            max-width: 760px;
+            margin: 2rem auto;
+            padding: 0 1.25rem;
+        }
+        .card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        .card h2 { color: #58a6ff; margin-bottom: 0.75rem; }
+        .card p  { color: #8b949e; font-size: 0.9rem; line-height: 1.6; margin-bottom: 0.5rem; }
+        button#update-btn {
+            padding: 0.6rem 1.4rem;
+            background: #238636;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.95rem;
+            font-weight: 600;
+        }
+        button#update-btn:disabled {
+            background: #21262d;
+            color: #8b949e;
+            cursor: not-allowed;
+        }
+        button#update-btn:hover:not(:disabled) { background: #2ea043; }
+        #output-box {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 0.75rem 1rem;
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+            font-size: 0.82rem;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-break: break-word;
+            overflow-wrap: break-word;
+            min-height: 200px;
+            max-height: 420px;
+            overflow-y: auto;
+            color: #c9d1d9;
+            margin-top: 1rem;
+            display: none;
+        }
+        .badge {
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .badge.running { background: #0d419d; color: #79c0ff; }
+        .badge.done    { background: #0f5132; color: #3fb950; }
+        .badge.error   { background: #67060c; color: #f85149; }
+        #status-badge { display: none; margin-left: 0.5rem; vertical-align: middle; }
+        .info-box {
+            background: #0d2137;
+            border-left: 4px solid #1f6feb;
+            padding: 0.75rem 1rem;
+            border-radius: 0 6px 6px 0;
+            font-size: 0.88rem;
+            line-height: 1.6;
+            color: #8b949e;
+            margin-bottom: 1rem;
+        }
+        .info-box strong { color: #c9d1d9; }
+    </style>
+</head>
+<body>
+<header>
+    <h1>🔄 Update from GitHub</h1>
+    <nav>
+        <a href="/">⚙️ Config</a>
+        <a href="/logs">📋 Logs</a>
+        <a href="/analytics">📊 Analytics</a>
+    </nav>
+</header>
+
+<div class="content">
+    <div class="info-box">
+        <strong>How it works:</strong> Clicking <em>Pull &amp; Update</em> runs
+        <code>git pull origin main</code> on the server, then installs any new Python
+        dependencies from <code>requirements.txt</code>.  After the update finishes,
+        <strong>restart the visa checker</strong> for the changes to take effect.
+        Your <code>config.ini</code> is never touched.
+    </div>
+
+    <div class="card">
+        <h2>Pull Latest Code</h2>
+        <p>
+            This will fetch the latest changes from the <strong>main</strong> branch of
+            your GitHub repository and update all Python dependencies.
+        </p>
+        <p>
+            Make sure the server has network access to GitHub and that the repository
+            was cloned with write permissions (or at least pull access).
+        </p>
+        <div style="margin-top:1rem;">
+            <button id="update-btn">⬇️ Pull &amp; Update</button>
+            <span id="status-badge" class="badge"></span>
+        </div>
+        <div id="output-box"></div>
+    </div>
+</div>
+
+<script>
+(function () {
+    const btn      = document.getElementById('update-btn');
+    const badge    = document.getElementById('status-badge');
+    const outputBox = document.getElementById('output-box');
+    let pollInterval = null;
+
+    function setStatus(state) {
+        badge.style.display = 'inline-block';
+        badge.className = 'badge ' + state;
+        const labels = { running: '⏳ Running…', done: '✅ Done', error: '❌ Error' };
+        badge.textContent = labels[state] || state;
+    }
+
+    function appendOutput(lines) {
+        if (!lines.length) return;
+        outputBox.style.display = 'block';
+        outputBox.textContent += lines.join('');
+        outputBox.scrollTop = outputBox.scrollHeight;
+    }
+
+    let lastLen = 0;
+
+    function poll() {
+        fetch('/api/update/status')
+            .then(r => r.json())
+            .then(data => {
+                const newLines = data.output.slice(lastLen);
+                lastLen = data.output.length;
+                appendOutput(newLines);
+
+                if (!data.running) {
+                    clearInterval(pollInterval);
+                    btn.disabled = false;
+                    const hasError = outputBox.textContent.includes('❌') ||
+                                     outputBox.textContent.includes('exited with code');
+                    setStatus(hasError ? 'error' : 'done');
+                }
+            })
+            .catch(() => {
+                // network error – keep polling
+            });
+    }
+
+    btn.addEventListener('click', () => {
+        btn.disabled = true;
+        outputBox.style.display = 'block';
+        outputBox.textContent = '';
+        lastLen = 0;
+        setStatus('running');
+
+        fetch('/api/update', { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) {
+                    appendOutput([data.error + '\n']);
+                    setStatus('error');
+                    btn.disabled = false;
+                    return;
+                }
+                pollInterval = setInterval(poll, 1000);
+            })
+            .catch(err => {
+                appendOutput(['❌ Request failed: ' + err + '\n']);
+                setStatus('error');
+                btn.disabled = false;
+            });
+    });
+})();
+</script>
+</body>
+</html>
