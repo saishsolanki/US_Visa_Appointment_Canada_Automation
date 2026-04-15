@@ -279,6 +279,12 @@ MAX_RETRY_ATTEMPTS = 2
 SLEEP_JITTER_SECONDS = 60
 ```
 
+### Optional: Proton VPN Automation
+- Install and sign in to the Proton VPN CLI (`protonvpn-cli login` followed by `protonvpn-cli configure`), then ensure the binary is on your `PATH` as `protonvpn` or provide the path via `VPN_CLI_PATH`.
+- Enable the integration by setting `VPN_PROVIDER = protonvpn` in `config.ini`. Optional targeting: set `VPN_COUNTRY` for fastest-in-country or `VPN_SERVER` for an explicit server (e.g., `ca-10`).
+- The checker will validate/restore the VPN session before each run, reconnect on DNS/network failures, and rotate to a new exit IP after CAPTCHA blocks when `VPN_ROTATE_ON_CAPTCHA` is true.
+- Set `VPN_REQUIRE_CONNECTED = True` to pause checks until Proton VPN is connected, and tune rotation frequency with `VPN_MIN_SESSION_MINUTES`.
+
 ### Gmail SMTP Setup
 1. Go to [Google Account Settings](https://myaccount.google.com/apppasswords)
 2. Generate an "App Password" for this application

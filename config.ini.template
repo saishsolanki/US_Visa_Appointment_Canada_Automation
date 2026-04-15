@@ -121,3 +121,16 @@ sleep_jitter_seconds = 60
 # Progress Report Settings
 # Set to 0 to disable periodic email reports
 # progress_report_interval_hours = 6
+
+# VPN Integration (optional)
+# Enable Proton VPN controls to auto-verify connectivity and rotate exits
+# when captchas or network errors occur. Requires the Proton VPN CLI to be
+# installed and logged in (protonvpn-cli login && protonvpn-cli configure).
+vpn_provider = none             # Set to protonvpn to enable
+vpn_cli_path = protonvpn        # Path to protonvpn/protonvpn-cli executable
+vpn_server =                    # Optional specific server name (e.g., ca-10)
+vpn_country =                   # Optional country code for fastest-in-country
+vpn_require_connected = False   # If True, checks pause until VPN connects
+vpn_rotate_on_captcha = True    # Reconnect when captcha blocks are detected
+vpn_reconnect_on_network_error = True  # Reconnect on DNS/connectivity failures
+vpn_min_session_minutes = 10    # Minimum minutes between forced rotations
