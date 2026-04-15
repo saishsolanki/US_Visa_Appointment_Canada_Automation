@@ -66,6 +66,10 @@ class CaptchaDetectedError(RuntimeError):
     """Raised when the AIS site presents a CAPTCHA that blocks automation."""
 
 
+class UiRateLimitError(RuntimeError):
+    """Raised when UI navigation rate limits are reached."""
+
+
 def run_cli_setup_wizard(config_path: str = "config.ini", template_path: str = "config.ini.template") -> None:
     run_cli_setup_wizard_external(config_path=config_path, template_path=template_path)
 
@@ -1409,6 +1413,22 @@ class VisaAppointmentChecker:
         self._ui_nav_timestamps = [t for t in self._ui_nav_timestamps if t > cutoff]
         self._ui_check_count += 1
 
+    def _ui_cooldown_seconds(self) -> int:
+        """Return seconds until UI navigation budget resets (0 if under limit)."""
+        limit = self.cfg.max_ui_navigations_per_hour
+        if limit <= 0:
+            return 0
+
+        now = self._now()
+        cutoff = now - timedelta(hours=1)
+        recent = [t for t in self._ui_nav_timestamps if t > cutoff]
+        if len(recent) < limit:
+            return 0
+
+        oldest = min(recent)
+        remaining = int((oldest + timedelta(hours=1) - now).total_seconds())
+        return max(1, remaining)
+
     def _should_throttle(self) -> bool:
         """Check if we should throttle API requests (uses API-specific budget)."""
         limit = self.cfg.max_api_requests_per_hour
@@ -1430,10 +1450,13 @@ class VisaAppointmentChecker:
             return False
         now = self._now()
         cutoff = now - timedelta(hours=1)
-        recent = sum(1 for t in self._ui_nav_timestamps if t > cutoff)
-        if recent >= limit:
-            logging.debug("UI rate limit: %d navigations in the last hour (max: %d)",
-                          recent, limit)
+        self._ui_nav_timestamps = [t for t in self._ui_nav_timestamps if t > cutoff]
+        if len(self._ui_nav_timestamps) >= limit:
+            logging.debug(
+                "UI rate limit: %d navigations in the last hour (max: %d)",
+                len(self._ui_nav_timestamps),
+                limit,
+            )
             return True
         return False
 
@@ -1502,6 +1525,25 @@ class VisaAppointmentChecker:
                     return
             else:
                 logging.debug("API fast-path found nothing; falling back to browser")
+
+        # Respect UI navigation budgets before launching a browser cycle
+        if self._should_throttle_ui():
+            cooldown = self._ui_cooldown_seconds()
+            if cooldown <= 0:
+                cooldown = max(30, int(self.cfg.check_frequency_minutes * 60))
+            self._backoff_until = max(
+                self._backoff_until or datetime.now(),
+                datetime.now() + timedelta(seconds=cooldown),
+            )
+            logging.warning(
+                "UI navigation limit reached (%d/hour). Backing off for %d seconds before next browser cycle.",
+                self.cfg.max_ui_navigations_per_hour,
+                cooldown,
+            )
+            raise UiRateLimitError(
+                f"UI navigation budget reached ({self.cfg.max_ui_navigations_per_hour}/hr); "
+                f"cooling down for {cooldown} seconds"
+            )
 
         # Record this as a UI navigation cycle
         self._record_ui_navigation()
@@ -3348,9 +3390,6 @@ class VisaAppointmentChecker:
         if len(self._recent_results) > 10:
             self._recent_results = self._recent_results[-10:]
 
-        if success:
-            self._backoff_until = None
-
         # Periodic cleanup every 10 checks
         if self._checks_since_restart % 10 == 0:
             self._cleanup_artifacts()
@@ -3546,6 +3585,8 @@ def main() -> None:
                 print(f"✅ Check #{check_count} completed successfully")
                 success = True
                 checker._record_network_success()
+            except UiRateLimitError as exc:
+                print(f"⏸️ Check #{check_count} skipped due to UI rate limit: {exc}")
             except CaptchaDetectedError as exc:
                 print(f"🤖 Check #{check_count} blocked by captcha: {exc}")
                 captcha_detected = True
