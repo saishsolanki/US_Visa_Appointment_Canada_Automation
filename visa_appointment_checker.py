@@ -254,7 +254,7 @@ class CheckerConfig:
             heartbeat_path=os.getenv("HEARTBEAT_PATH", raw_defaults.get("HEARTBEAT_PATH")),
             max_retry_attempts=max(1, _get_int("MAX_RETRY_ATTEMPTS", 2)),  # Reduced default
             retry_backoff_seconds=max(1, _get_int("RETRY_BACKOFF_SECONDS", 5)),
-            sleep_jitter_seconds=max(0, _get_int("SLEEP_JITTER_SECONDS", 60)),  # Increased default
+            sleep_jitter_seconds=max(0, _get_int("SLEEP_JITTER_SECONDS", 15)),
             busy_backoff_min_minutes=max(1, _get_int("BUSY_BACKOFF_MIN_MINUTES", 10)),
             busy_backoff_max_minutes=max(1, _get_int("BUSY_BACKOFF_MAX_MINUTES", 15)),
             abort_on_captcha=_to_bool(_get("ABORT_ON_CAPTCHA", "False")),
@@ -268,9 +268,9 @@ class CheckerConfig:
             weekend_frequency_multiplier=_get_float("WEEKEND_FREQUENCY_MULTIPLIER", 2.0),
             pattern_learning_enabled=_to_bool(_get("PATTERN_LEARNING_ENABLED", "True")),
             # Auto-book guardrails
-            min_improvement_days=max(1, _get_int("MIN_IMPROVEMENT_DAYS", 7)),
+            min_improvement_days=max(1, _get_int("MIN_IMPROVEMENT_DAYS", 2)),
             auto_book_dry_run=_to_bool(_get("AUTO_BOOK_DRY_RUN", "True")),
-            auto_book_confirmation_wait_seconds=max(0, _get_int("AUTO_BOOK_CONFIRMATION_WAIT_SECONDS", 30)),
+            auto_book_confirmation_wait_seconds=max(0, _get_int("AUTO_BOOK_CONFIRMATION_WAIT_SECONDS", 10)),
             timezone=_get("TIMEZONE", "America/Toronto"),
             # Notification channels
             telegram_bot_token=_get("TELEGRAM_BOT_TOKEN", ""),
@@ -1405,18 +1405,36 @@ class VisaAppointmentChecker:
             f"?appointments[expedite]=false"
         )
 
-        try:
-            self._record_api_request()
-            resp = session.get(url, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
+        def _extract_dates(response):
+            if response.status_code == 200:
+                data = response.json()
                 if isinstance(data, list):
                     dates = [entry["date"] for entry in data if "date" in entry]
                     logging.info("API: %d dates available at facility %s", len(dates), facility_id)
                     return dates
-            elif resp.status_code == 401:
-                logging.debug("API returned 401 — session may have expired")
+            return None
+
+        try:
+            self._record_api_request()
+            resp = session.get(url, timeout=10)
+            dates = _extract_dates(resp)
+            if dates is not None:
+                return dates
+            if resp.status_code == 401:
+                logging.debug("API returned 401 — refreshing session and retrying once")
                 self._api_session = None
+                retry_session = self._get_api_session()
+                if retry_session is not None:
+                    self._record_api_request()
+                    retry_resp = retry_session.get(url, timeout=10)
+                    retry_dates = _extract_dates(retry_resp)
+                    if retry_dates is not None:
+                        return retry_dates
+                    logging.debug(
+                        "API retry returned status %d for facility %s",
+                        retry_resp.status_code,
+                        facility_id,
+                    )
             else:
                 logging.debug("API returned status %d for facility %s", resp.status_code, facility_id)
         except Exception as exc:  # noqa: BLE001
@@ -1439,12 +1457,28 @@ class VisaAppointmentChecker:
             f"?date={date}&appointments[expedite]=false"
         )
 
+        def _extract_times(response):
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("available_times", [])
+            return None
+
         try:
             self._record_api_request()
             resp = session.get(url, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                return data.get("available_times", [])
+            times = _extract_times(resp)
+            if times is not None:
+                return times
+            if resp.status_code == 401:
+                logging.debug("API times returned 401 — refreshing session and retrying once")
+                self._api_session = None
+                retry_session = self._get_api_session()
+                if retry_session is not None:
+                    self._record_api_request()
+                    retry_resp = retry_session.get(url, timeout=10)
+                    retry_times = _extract_times(retry_resp)
+                    if retry_times is not None:
+                        return retry_times
         except Exception as exc:  # noqa: BLE001
             logging.debug("API time check failed: %s", exc)
 

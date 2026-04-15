@@ -14,8 +14,8 @@ location = Ottawa - U.S. Embassy
 start_date = 2025-09-25
 end_date = 2025-12-31
 
-# Check frequency (recommended: 3-5 minutes for optimal results)
-check_frequency_minutes = 3
+# Check frequency (recommended: 1-3 minutes for earliest-slot detection)
+check_frequency_minutes = 2
 
 # Strategic optimization settings
 burst_mode_enabled = True
@@ -27,7 +27,7 @@ prime_hours_start = 6,12,17,22
 prime_hours_end = 9,14,19,1
 
 # Backoff reduction during prime time
-prime_time_backoff_multiplier = 0.5
+prime_time_backoff_multiplier = 0.3
 
 # Weekend strategy adjustment
 weekend_frequency_multiplier = 2.0
@@ -55,9 +55,9 @@ auto_book = False
 # Dry-run mode logs intended actions without actually booking
 auto_book_dry_run = True
 # Seconds to wait before confirming auto-book (gives time to abort)
-auto_book_confirmation_wait_seconds = 30
+auto_book_confirmation_wait_seconds = 10
 # Only auto-book if the new date is at least this many days earlier
-min_improvement_days = 7
+min_improvement_days = 2
 
 # Timezone for prime-time window calculations (pytz / IANA format)
 timezone = America/Toronto
@@ -110,7 +110,7 @@ rotation_interval_checks = 1
 # Performance Optimization Settings (recommended defaults)
 driver_restart_checks = 50
 max_retry_attempts = 2
-sleep_jitter_seconds = 60
+sleep_jitter_seconds = 15
 
 # Advanced Settings (usually don't need to change)
 # retry_backoff_seconds = 5
