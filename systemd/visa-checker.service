@@ -1,0 +1,54 @@
+[Unit]
+Description=US Visa Appointment Checker
+Documentation=https://github.com/saishsolanki/US_Visa_Appointment_Canada_Automation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Security: Run as the user who installed the app (not root)
+# Replace USER_NAME with your actual username
+User=USER_NAME
+Group=USER_NAME
+
+# Working directory (where config.ini is located)
+# Replace with actual path to your installation
+WorkingDirectory=/home/USER_NAME/US_Visa_Appointment_Canada_Automation
+
+# Command to run the checker
+# Using virtual environment if created by install script
+ExecStart=/home/USER_NAME/US_Visa_Appointment_Canada_Automation/visa_env/bin/python \
+    /home/USER_NAME/US_Visa_Appointment_Canada_Automation/visa_appointment_checker.py \
+    --frequency 5
+
+# Restart policy - always restart on failure with a 30 second delay
+Restart=always
+RestartSec=30
+
+# Stop timeout - give Chrome time to shutdown gracefully
+TimeoutStopSec=60
+
+# Environment variables
+Environment=PYTHONUNBUFFERED=1
+Environment=TZ=America/Toronto
+
+# Resource limits
+MemoryMax=2G
+CPUQuota=100%
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/USER_NAME/US_Visa_Appointment_Canada_Automation/logs
+ReadWritePaths=/home/USER_NAME/US_Visa_Appointment_Canada_Automation/artifacts
+
+# Logging (journald)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=visa-checker
+
+[Install]
+WantedBy=multi-user.target

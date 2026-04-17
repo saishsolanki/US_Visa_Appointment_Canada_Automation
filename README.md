@@ -3,6 +3,9 @@
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
+> 📍 **[Start with docs/README.md](docs/README.md) for a navigation guide organized by use case.** 
+> Find what you need fast: setup, troubleshooting, configuration, optimization, or advanced topics.
+
 This comprehensive automation tool helps Canadian users find earlier US visa appointment dates by continuously monitoring the official US Visa Information Service (AIS) website. Built with Python, Selenium, and a user-friendly web interface.
 
 ## 🚀 Features
@@ -206,7 +209,7 @@ Copy `config.ini.template` to `config.ini` and edit with your details:
 cp config.ini.template config.ini
 ```
 
-Then edit `config.ini` with your information:
+**See [CONFIGURATION.md](CONFIGURATION.md) for a complete reference of all available options, organized by category (Essential, Notifications, Behavior, Optimization, Advanced).**
 
 The checker validates configuration values at startup and exits with clear error messages when required keys are missing or values are invalid (for example, incorrect date format or invalid SMTP port).
 
@@ -683,6 +686,8 @@ pip install webdriver-manager
 7. **Check internet connection**: Ensure stable connectivity for website monitoring
 
 ### Documentation Resources
+- 📚 **[docs/README.md](docs/README.md)** - Documentation navigation hub (start here!)
+- ⚙️ **[CONFIGURATION.md](CONFIGURATION.md)** - Complete configuration reference organized by category
 - [`README.md`](README.md) - Main documentation (this file)
 - [`FAQ.md`](FAQ.md) - Quick troubleshooting flowchart and fixes
 - [`GMAIL_SETUP_GUIDE.md`](GMAIL_SETUP_GUIDE.md) - Detailed Gmail SMTP configuration

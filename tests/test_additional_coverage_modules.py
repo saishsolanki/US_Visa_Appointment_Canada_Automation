@@ -14,13 +14,17 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import browser_session
-import config_manager
-import config_wizard
-import logging_utils
-import notification_utils
-import scheduling_utils
-import selector_registry
+from src.utils import browser as browser_session
+from src.utils import config as config_module
+from src.utils import config as config_wizard  # for setup_wizard tests
+from src.cli import setup_wizard
+from src.utils import logging as logging_utils
+from src.utils import notifications as notification_utils
+from src.utils import scheduling as scheduling_utils
+from src.utils import selectors as selector_registry
+
+# Backward-compat aliases for existing test code
+config_manager = config_module
 
 
 def test_selector_registry_load_json_and_apply_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -295,9 +299,9 @@ smtp_port = 587
     secrets = iter(["secret-pass", "smtp-pass"])
 
     monkeypatch.setattr("builtins.input", lambda *_: next(inputs))
-    monkeypatch.setattr(config_wizard, "getpass", lambda *_: next(secrets))
+    monkeypatch.setattr(setup_wizard, "getpass", lambda *_: next(secrets))
 
-    config_wizard.run_cli_setup_wizard(str(out_cfg), str(template))
+    setup_wizard.run_cli_setup_wizard(str(out_cfg), str(template))
 
     parser = configparser.ConfigParser()
     parser.read(out_cfg)

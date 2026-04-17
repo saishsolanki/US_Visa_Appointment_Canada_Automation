@@ -32,10 +32,10 @@ Your quick navigation center. Repository guides are at project root for backward
 
 ---
 
-## 🔧 Advanced
+## � Advanced Topics
 
-- **Sensitive data handling**: [SANITIZATION_NOTE.md](../SANITIZATION_NOTE.md)
-- **Ecosystem context**: [US_VISA_AUTOMATION_ECOSYSTEM_ANALYSIS.md](../US_VISA_AUTOMATION_ECOSYSTEM_ANALYSIS.md)
+- **[Advanced Documentation](advanced/README.md)** — Ecosystem analysis, research, and contributor guides
+
 
 ---
 

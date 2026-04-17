@@ -7,7 +7,7 @@ from selenium.webdriver.common.by import By
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from visa_appointment_checker import CheckerConfig, VisaAppointmentChecker
+from src.core.visa_checker import CheckerConfig, VisaAppointmentChecker
 
 
 def _write_config(path: Path, overrides: Optional[Dict[str, str]] = None) -> Path:
