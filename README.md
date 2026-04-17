@@ -11,7 +11,7 @@ This comprehensive automation tool helps Canadian users find earlier US visa app
 - **Configurable Check Frequency**: Set custom intervals (recommended: 5-15 minutes)
 - **Date Range Filtering**: Only accepts appointments within your preferred date range
 - **Location-Specific**: Monitors specific embassy/consulate locations
-- **Multi-Channel Notifications**: SMTP email + Telegram + webhook + Pushover push alerts
+- **Multi-Channel Notifications**: SMTP email + Telegram + webhook + Pushover + SendGrid API alerts
 - **Optional Auto-Booking**: Automatically book found appointments (use with caution)
 - **Dedicated Test Mode**: Validate login/schedule access without probing or booking slots
 - **Complex Date Exclusions**: Exclude up to 9 date windows from matching logic
@@ -57,7 +57,7 @@ This tool works seamlessly across multiple operating systems with automatic opti
 **Key Features Across All Platforms:**
 - 🚀 **60-80% Performance Improvement** with intelligent session management
 - ⚡ **Adaptive Rate Limiting** prevents server overload on any OS
-- 🎯 **One-Click Installation** with distribution-specific scripts
+- 🎯 **One-Click Installation** with auto-detected Linux package managers
 - 📊 **Real-time Performance Monitoring** across all platforms
 
 ## 📁 Project Structure
@@ -89,6 +89,8 @@ US_Visa_Appointment_Canada_Automation/
 ├── run_web_ui.sh                 # Linux web UI wrapper (created by installer)
 ├── templates/
 │   └── index.html                # Web UI template
+├── docs/
+│   └── README.md                 # Documentation index and migration notes
 ├── run.bat                       # Windows runner script
 ├── README.md                     # This file
 ├── FAQ.md                        # Quick troubleshooting flowchart and FAQs
@@ -114,6 +116,8 @@ chmod +x install.sh && ./install.sh
 ```
 
 `install.sh` auto-detects your package manager (`apt`, `dnf`, or `pacman`) and gives you a choice of Docker or native Python + systemd installation.
+
+Legacy scripts (`install_ubuntu.sh`, `install_debian.sh`, `install_fedora.sh`, `install_arch.sh`, `install_kali.sh`) are still present as compatibility wrappers and forward to `install.sh`.
 
 These scripts will install Python3, pip, create a virtual environment, install dependencies, and create default configuration with wrapper scripts.
 
@@ -195,6 +199,11 @@ PASSWORD = your_ais_password
 CURRENT_APPOINTMENT_DATE = 2025-12-01
 LOCATION = Ottawa - U.S. Embassy
 
+# AIS portal controls
+COUNTRY_CODE = en-ca
+SCHEDULE_ID =
+FACILITY_ID =
+
 # Desired appointment window
 START_DATE = 2025-09-25
 END_DATE = 2025-12-31
@@ -241,6 +250,11 @@ SAFETY_FIRST_MIN_INTERVAL_MINUTES = 10
 # Optional mobile push (Pushover)
 PUSHOVER_APP_TOKEN =
 PUSHOVER_USER_KEY =
+
+# Optional SendGrid API notifications
+SENDGRID_API_KEY =
+SENDGRID_FROM_EMAIL =
+SENDGRID_TO_EMAIL =
 
 # Optional account rotation (email|password;email|password)
 ACCOUNT_ROTATION_ENABLED = False
@@ -425,6 +439,12 @@ Access the enhanced interface at: http://127.0.0.1:5000
 ### Command Line Options
 - `--frequency`: Check interval in minutes (defaults to the value in `config.ini`)
 - `--no-headless`: Run Chrome in a visible window for debugging and CAPTCHA solving
+- `--run-once`: Execute one check cycle and exit (recommended for Task Scheduler/cron)
+
+### Essential AIS Parameters
+- `COUNTRY_CODE`: Regional AIS portal path segment (for example `en-ca`, `en-gb`).
+- `SCHEDULE_ID`: Numeric schedule ID from your `.../schedule/{id}/continue_actions` URL.
+- `FACILITY_ID`: Optional facility override for direct API checks (Toronto `94`, Vancouver `95`).
 
 ## 📊 Monitoring
 
@@ -498,6 +518,22 @@ tail -f visa_checker.log
 - Errors and exceptions with performance context
 
 ## ⚠️ Important Notes
+
+### Official Portal Context
+- **AIS Portal** (`ais.usvisa-info.com`): Used in regions like Canada/UK and keyed by regional path codes such as `en-ca` and `en-gb`.
+- **CGI Portals** (`usvisascheduling.com`, `ustraveldocs.com`): Used in other regions and may differ in workflow/endpoints.
+- This repository is optimized for AIS-style flows and now exposes `COUNTRY_CODE`, `SCHEDULE_ID`, and optional `FACILITY_ID` to keep routing explicit.
+
+### Portal Constraints You Must Plan For
+- **Rate limiting/throttling** can produce `Forbidden`, empty responses, or temporary lockouts when polling is too aggressive.
+- **System Busy windows** are common during release spikes and may behave like account/session throttles.
+- **Reschedule attempt limits** are finite; use `TEST_MODE`, conservative intervals, and dry-run defaults before enabling aggressive actions.
+- **Captcha/manual gates** are expected; run with `--no-headless` when intervention is needed.
+
+### Administrative Risk Warnings
+- Automated usage may conflict with portal terms/policies depending on region and use pattern.
+- Incorrect answers in portal profile/pop-up questions can cause interview-day rejection or difficult recovery.
+- MRV fees can expire by time window even if technical checks continue running.
 
 ### CAPTCHA Handling
 The AIS website uses hCaptcha. Our optimized system includes:

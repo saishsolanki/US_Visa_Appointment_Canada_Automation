@@ -1,9 +1,10 @@
 from flask import Flask, request, render_template, redirect, url_for, flash, jsonify, Response, stream_with_context
-import configparser
 import os
 import subprocess
 import threading
 import time
+
+from config_manager import BOOLEAN_KEYS, CONFIG_KEYS, ConfigManager
 
 app = Flask(__name__)
 app.secret_key = os.urandom(32)
@@ -16,111 +17,27 @@ _update_output: list[str] = []
 _update_lock = threading.Lock()
 _update_running = False
 
-CONFIG_KEYS = [
-    'EMAIL', 'PASSWORD', 'CURRENT_APPOINTMENT_DATE', 'LOCATION',
-    'START_DATE', 'END_DATE', 'CHECK_FREQUENCY_MINUTES',
-    'BURST_MODE_ENABLED', 'MULTI_LOCATION_CHECK', 'BACKUP_LOCATIONS',
-    'PRIME_HOURS_START', 'PRIME_HOURS_END', 'PRIME_TIME_BACKOFF_MULTIPLIER',
-    'WEEKEND_FREQUENCY_MULTIPLIER', 'PATTERN_LEARNING_ENABLED',
-    'SMTP_SERVER', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS',
-    'NOTIFY_EMAIL', 'AUTO_BOOK', 'AUTO_BOOK_DRY_RUN',
-    'AUTO_BOOK_CONFIRMATION_WAIT_SECONDS', 'MIN_IMPROVEMENT_DAYS',
-    'TIMEZONE', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID',
-    'WEBHOOK_URL', 'PUSHOVER_APP_TOKEN', 'PUSHOVER_USER_KEY',
-    'PREFERRED_TIME', 'MAX_REQUESTS_PER_HOUR',
-    'SLOT_TTL_HOURS', 'DRIVER_RESTART_CHECKS',
-    'MAX_RETRY_ATTEMPTS', 'SLEEP_JITTER_SECONDS', 'TEST_MODE',
-    'EXCLUDED_DATE_RANGES', 'SAFETY_FIRST_MODE', 'SAFETY_FIRST_MIN_INTERVAL_MINUTES',
-    'AUDIO_ALERTS_ENABLED', 'ACCOUNT_ROTATION_ENABLED', 'ROTATION_ACCOUNTS',
-    'ROTATION_INTERVAL_CHECKS'
-]
+CONFIG_MANAGER = ConfigManager()
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
-    config = configparser.ConfigParser()
-    
-    # Create config.ini from template if it doesn't exist
-    if not os.path.exists('config.ini'):
-        if os.path.exists('config.ini.template'):
-            config.read('config.ini.template')
-            with open('config.ini', 'w') as f:
-                config.write(f)
-        else:
-            # Create empty config file if template doesn't exist
-            with open('config.ini', 'w') as f:
-                f.write('[DEFAULT]\n')
-    
-    # Always read the config file
-    config.read('config.ini')
+    CONFIG_MANAGER.load_parser()
 
     if request.method == 'POST':
-        # DEFAULT section is automatically available in configparser
+        updates = {}
         for key in CONFIG_KEYS:
-            if key in [
-                'AUTO_BOOK', 'BURST_MODE_ENABLED', 'MULTI_LOCATION_CHECK',
-                'PATTERN_LEARNING_ENABLED', 'AUTO_BOOK_DRY_RUN', 'TEST_MODE',
-                'SAFETY_FIRST_MODE', 'AUDIO_ALERTS_ENABLED', 'ACCOUNT_ROTATION_ENABLED',
-            ]:
+            if key in BOOLEAN_KEYS:
                 value = 'True' if request.form.get(key) else 'False'
             else:
                 value = request.form.get(key, '')
-            config.set('DEFAULT', key, value)
-        
-        with open('config.ini', 'w') as f:
-            config.write(f)
+            updates[key] = value
+
+        CONFIG_MANAGER.save_updates(updates)
         
         flash('🚀 Strategic configuration saved successfully! Your optimization settings are now active.', 'success')
         return redirect(url_for('index'))
 
-    # Set default values for strategic optimization settings
-    defaults = {
-        'CHECK_FREQUENCY_MINUTES': '3',
-        'BURST_MODE_ENABLED': 'True',
-        'MULTI_LOCATION_CHECK': 'True', 
-        'BACKUP_LOCATIONS': 'Toronto,Montreal,Vancouver',
-        'PRIME_HOURS_START': '6,12,17,22',
-        'PRIME_HOURS_END': '9,14,19,1',
-        'PRIME_TIME_BACKOFF_MULTIPLIER': '0.5',
-        'WEEKEND_FREQUENCY_MULTIPLIER': '2.0',
-        'PATTERN_LEARNING_ENABLED': 'True',
-        'SMTP_SERVER': 'smtp.gmail.com',
-        'SMTP_PORT': '587',
-        'AUTO_BOOK': 'False',
-        'AUTO_BOOK_DRY_RUN': 'True',
-        'AUTO_BOOK_CONFIRMATION_WAIT_SECONDS': '30',
-        'MIN_IMPROVEMENT_DAYS': '7',
-        'TIMEZONE': 'America/Toronto',
-        'TELEGRAM_BOT_TOKEN': '',
-        'TELEGRAM_CHAT_ID': '',
-        'WEBHOOK_URL': '',
-        'PUSHOVER_APP_TOKEN': '',
-        'PUSHOVER_USER_KEY': '',
-        'PREFERRED_TIME': 'any',
-        'MAX_REQUESTS_PER_HOUR': '120',
-        'SLOT_TTL_HOURS': '24',
-        'DRIVER_RESTART_CHECKS': '50',
-        'MAX_RETRY_ATTEMPTS': '2',
-        'SLEEP_JITTER_SECONDS': '60',
-        'TEST_MODE': 'False',
-        'EXCLUDED_DATE_RANGES': '',
-        'SAFETY_FIRST_MODE': 'False',
-        'SAFETY_FIRST_MIN_INTERVAL_MINUTES': '10',
-        'AUDIO_ALERTS_ENABLED': 'False',
-        'ACCOUNT_ROTATION_ENABLED': 'False',
-        'ROTATION_ACCOUNTS': '',
-        'ROTATION_INTERVAL_CHECKS': '1',
-    }
-    
-    current = {}
-    for k in CONFIG_KEYS:
-        try:
-            # Try uppercase first, then lowercase for backward compatibility
-            value = config.get('DEFAULT', k, fallback=None)
-            if value is None:
-                value = config.get('DEFAULT', k.lower(), fallback=defaults.get(k, ''))
-            current[k] = value
-        except Exception:
-            current[k] = defaults.get(k, '')
+    current = CONFIG_MANAGER.ui_values()
     
     return render_template('index.html', current=current)
 

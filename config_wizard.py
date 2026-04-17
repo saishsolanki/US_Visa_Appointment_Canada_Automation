@@ -1,27 +1,17 @@
-import configparser
 from getpass import getpass
+
+from config_manager import ConfigManager
 
 
 def run_cli_setup_wizard(config_path: str = "config.ini", template_path: str = "config.ini.template") -> None:
-    parser = configparser.ConfigParser()
-    parser.optionxform = str
-    parser.read(template_path)
-    if "DEFAULT" not in parser:
-        parser["DEFAULT"] = {}
-    defaults = parser["DEFAULT"]
+    manager = ConfigManager(config_path=config_path, template_path=template_path)
+    parser = manager.load_parser()
 
     def _get(name: str, fallback: str = "") -> str:
-        for key, value in defaults.items():
-            if key.upper() == name:
-                return str(value).strip()
-        return fallback
+        return ConfigManager.get_case_insensitive(parser, name, fallback).strip()
 
     def _set(name: str, value: str) -> None:
-        for key in list(defaults.keys()):
-            if key.upper() == name:
-                defaults[key] = value
-                return
-        defaults[name.lower()] = value
+        ConfigManager.set_case_insensitive(parser, name, value)
 
     def _prompt(name: str, label: str, *, secret: bool = False, required: bool = True) -> str:
         current = _get(name)
@@ -43,6 +33,9 @@ def run_cli_setup_wizard(config_path: str = "config.ini", template_path: str = "
     _prompt("PASSWORD", "AIS login password", secret=True)
     _prompt("CURRENT_APPOINTMENT_DATE", "Current appointment date (YYYY-MM-DD)")
     _prompt("LOCATION", "Preferred location (example: Ottawa - U.S. Embassy)")
+    _prompt("COUNTRY_CODE", "AIS country code (example: en-ca)", required=False)
+    _prompt("SCHEDULE_ID", "AIS schedule ID (optional, numeric)", required=False)
+    _prompt("FACILITY_ID", "Facility ID override (optional, numeric)", required=False)
     _prompt("START_DATE", "Search start date (YYYY-MM-DD)")
     _prompt("END_DATE", "Search end date (YYYY-MM-DD)")
     _prompt("CHECK_FREQUENCY_MINUTES", "Check frequency in minutes")
@@ -72,10 +65,12 @@ def run_cli_setup_wizard(config_path: str = "config.ini", template_path: str = "
     _prompt("AUDIO_ALERTS_ENABLED", "Enable audio alerts? (True/False)", required=False)
     _prompt("PUSHOVER_APP_TOKEN", "Pushover app token (optional)", required=False)
     _prompt("PUSHOVER_USER_KEY", "Pushover user key (optional)", required=False)
+    _prompt("SENDGRID_API_KEY", "SendGrid API key (optional)", required=False)
+    _prompt("SENDGRID_FROM_EMAIL", "SendGrid from email (optional)", required=False)
+    _prompt("SENDGRID_TO_EMAIL", "SendGrid to email (optional)", required=False)
     _prompt("ACCOUNT_ROTATION_ENABLED", "Enable multi-account rotation? (True/False)", required=False)
     _prompt("ROTATION_ACCOUNTS", "Rotation accounts email|password;email|password (optional)", required=False)
     _prompt("ROTATION_INTERVAL_CHECKS", "Rotate account every N checks", required=False)
 
-    with open(config_path, "w", encoding="utf-8") as handle:
-        parser.write(handle)
+    manager.save_parser(parser)
     print(f"\n✅ Saved configuration to {config_path}")

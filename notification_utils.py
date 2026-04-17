@@ -131,6 +131,40 @@ def send_pushover_notification(app_token: str, user_key: str, subject: str, mess
     return False
 
 
+def send_sendgrid_notification(api_key: str, from_email: str, to_email: str, subject: str, message: str) -> bool:
+    """Send notification using SendGrid v3 Mail Send API."""
+    if not api_key or not from_email or not to_email:
+        return False
+
+    payload = json.dumps({
+        "personalizations": [{"to": [{"email": to_email}]}],
+        "from": {"email": from_email},
+        "subject": subject[:998],
+        "content": [{"type": "text/plain", "value": message}],
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://api.sendgrid.com/v3/mail/send",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status in (200, 202):
+                logging.info("SendGrid notification sent successfully")
+                return True
+            logging.warning("SendGrid API returned status %d", resp.status)
+    except urllib.error.HTTPError as exc:
+        logging.warning("SendGrid notification failed (HTTP %d): %s", exc.code, exc.reason)
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("SendGrid notification failed: %s", exc)
+
+    return False
+
+
 def send_all_notifications(cfg, subject: str, message: str) -> bool:
     """Send notification via all configured channels."""
     results = []
@@ -154,5 +188,20 @@ def send_all_notifications(cfg, subject: str, message: str) -> bool:
     pushover_user_key = getattr(cfg, "pushover_user_key", "") or ""
     if pushover_app_token and pushover_user_key:
         results.append(send_pushover_notification(pushover_app_token, pushover_user_key, subject, message))
+
+    # SendGrid API
+    sendgrid_api_key = getattr(cfg, "sendgrid_api_key", "") or ""
+    sendgrid_from_email = getattr(cfg, "sendgrid_from_email", "") or ""
+    sendgrid_to_email = getattr(cfg, "sendgrid_to_email", "") or ""
+    if sendgrid_api_key and sendgrid_from_email and sendgrid_to_email:
+        results.append(
+            send_sendgrid_notification(
+                sendgrid_api_key,
+                sendgrid_from_email,
+                sendgrid_to_email,
+                subject,
+                message,
+            )
+        )
 
     return any(results)

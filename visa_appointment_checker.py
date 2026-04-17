@@ -51,13 +51,6 @@ from selector_registry import apply_selector_overrides
 from slot_ledger import SlotLedger
 from vpn_utils import ProtonVpnManager
 
-LOGIN_URL = "https://ais.usvisa-info.com/en-ca/niv/users/sign_in"
-RESCHEDULE_URLS = [
-    "https://ais.usvisa-info.com/en-ca/niv/schedule/",
-    "https://ais.usvisa-info.com/en-ca/niv/appointment",
-    "https://ais.usvisa-info.com/en-ca/niv/",
-]
-
 # Keep webdriver-manager quiet unless user overrides
 os.environ.setdefault("WDM_LOG_LEVEL", "0")
 
@@ -98,6 +91,9 @@ class CheckerConfig:
     smtp_user: str
     smtp_pass: str
     notify_email: str
+    country_code: str
+    schedule_id: str
+    facility_id: str
     auto_book: bool
     driver_restart_checks: int
     heartbeat_path: Optional[str]
@@ -127,6 +123,9 @@ class CheckerConfig:
     webhook_url: str
     pushover_app_token: str
     pushover_user_key: str
+    sendgrid_api_key: str
+    sendgrid_from_email: str
+    sendgrid_to_email: str
     # Time & rate preferences
     preferred_time: str
     max_requests_per_hour: int
@@ -249,6 +248,9 @@ class CheckerConfig:
             smtp_user=_get("SMTP_USER"),
             smtp_pass=_get("SMTP_PASS"),
             notify_email=_get("NOTIFY_EMAIL"),
+            country_code=_get("COUNTRY_CODE", "en-ca"),
+            schedule_id=_get("SCHEDULE_ID", ""),
+            facility_id=_get("FACILITY_ID", ""),
             auto_book=_to_bool(_get("AUTO_BOOK", "False")),
             driver_restart_checks=max(1, _get_int("DRIVER_RESTART_CHECKS", 50)),  # Increased default
             heartbeat_path=os.getenv("HEARTBEAT_PATH", raw_defaults.get("HEARTBEAT_PATH")),
@@ -278,6 +280,9 @@ class CheckerConfig:
             webhook_url=_get("WEBHOOK_URL", ""),
             pushover_app_token=_get("PUSHOVER_APP_TOKEN", ""),
             pushover_user_key=_get("PUSHOVER_USER_KEY", ""),
+            sendgrid_api_key=_get("SENDGRID_API_KEY", ""),
+            sendgrid_from_email=_get("SENDGRID_FROM_EMAIL", ""),
+            sendgrid_to_email=_get("SENDGRID_TO_EMAIL", ""),
             # Time & rate preferences
             preferred_time=_get("PREFERRED_TIME", "any"),
             max_requests_per_hour=max(0, _get_int("MAX_REQUESTS_PER_HOUR", 120)),
@@ -331,12 +336,14 @@ class CheckerConfig:
         tg = "on" if self.telegram_bot_token and self.telegram_chat_id else "off"
         wh = "on" if self.webhook_url else "off"
         po = "on" if self.pushover_app_token and self.pushover_user_key else "off"
+        sg = "on" if self.sendgrid_api_key and self.sendgrid_from_email and self.sendgrid_to_email else "off"
         vpn = self.vpn_provider.lower()
         vpn_state = vpn if vpn and vpn != "none" else "off"
         return (
             f"email={self._mask(self.email)} | location={self.location} | "
             f"notify={self._mask(self.notify_email)} | auto_book={self.auto_book} | "
-            f"telegram={tg} | webhook={wh} | pushover={po} | "
+            f"telegram={tg} | webhook={wh} | pushover={po} | sendgrid={sg} | "
+            f"country={self.country_code} | "
             f"vpn={vpn_state} | abort_on_captcha={self.abort_on_captcha}"
         )
 
@@ -837,8 +844,11 @@ class VisaAppointmentChecker:
         self._rotation_index = 0
         self._vpn_manager: Optional[ProtonVpnManager] = None
 
+        self._refresh_portal_urls()
+
         # API fast-path (P1.1 / P1.2)
-        self._schedule_id: Optional[str] = None
+        seeded_schedule_id = (cfg.schedule_id or "").strip()
+        self._schedule_id: Optional[str] = seeded_schedule_id or None
         self._api_session: Optional[Any] = None
         self._api_session_cookies_hash: Optional[int] = None
 
@@ -875,6 +885,9 @@ class VisaAppointmentChecker:
         self._init_vpn_manager()
         if cfg.pattern_learning_enabled:
             self._load_patterns()
+
+        if self._schedule_id:
+            logging.info("Using configured schedule_id seed: %s", self._schedule_id)
         
         if cfg.heartbeat_path:
             heartbeat_path = Path(cfg.heartbeat_path).expanduser()
@@ -959,6 +972,33 @@ class VisaAppointmentChecker:
             except Exception:  # noqa: BLE001
                 pass
         return datetime.now()
+
+    def _portal_url(self) -> str:
+        return getattr(self, "_portal_base", "https://ais.usvisa-info.com/en-ca/niv")
+
+    def _login_target(self) -> str:
+        return getattr(self, "_login_url", f"{self._portal_url()}/users/sign_in")
+
+    def _reschedule_targets(self) -> List[str]:
+        targets = getattr(self, "_reschedule_urls", None)
+        if isinstance(targets, list) and targets:
+            return targets
+        base = self._portal_url()
+        return [f"{base}/schedule/", f"{base}/appointment", f"{base}/"]
+
+    def _refresh_portal_urls(self) -> None:
+        country_code = (self.cfg.country_code or "en-ca").strip().lower()
+        if not re.fullmatch(r"[a-z]{2}-[a-z]{2}", country_code):
+            logging.warning("Invalid COUNTRY_CODE '%s'; defaulting to en-ca", country_code)
+            country_code = "en-ca"
+        self.cfg.country_code = country_code
+        self._portal_base = f"https://ais.usvisa-info.com/{country_code}/niv"
+        self._login_url = f"{self._portal_base}/users/sign_in"
+        self._reschedule_urls = [
+            f"{self._portal_base}/schedule/",
+            f"{self._portal_base}/appointment",
+            f"{self._portal_base}/",
+        ]
 
     def _extract_schedule_id(self, url: str) -> Optional[str]:
         """Extract schedule_id from AIS URL pattern /schedule/{id}/"""
@@ -1342,6 +1382,9 @@ class VisaAppointmentChecker:
     # ------------------------------------------------------------------
     def _resolve_facility_id(self, location: str) -> Optional[str]:
         """Resolve a location name to a facility ID."""
+        override = (self.cfg.facility_id or "").strip()
+        if override.isdigit():
+            return override
         normalized = location.strip().lower()
         for name, fid in self.FACILITY_ID_MAP.items():
             if name.lower() in normalized or normalized in name.lower():
@@ -1400,7 +1443,7 @@ class VisaAppointmentChecker:
             return None
 
         url = (
-            f"https://ais.usvisa-info.com/en-ca/niv/schedule/"
+            f"{self._portal_url()}/schedule/"
             f"{self._schedule_id}/appointment/days/{facility_id}.json"
             f"?appointments[expedite]=false"
         )
@@ -1452,7 +1495,7 @@ class VisaAppointmentChecker:
             return None
 
         url = (
-            f"https://ais.usvisa-info.com/en-ca/niv/schedule/"
+            f"{self._portal_url()}/schedule/"
             f"{self._schedule_id}/appointment/times/{facility_id}.json"
             f"?date={date}&appointments[expedite]=false"
         )
@@ -1701,7 +1744,27 @@ class VisaAppointmentChecker:
             try:
                 new_cfg = CheckerConfig.load()
                 old_auto_book = self.cfg.auto_book
+                old_country = self.cfg.country_code
+                old_schedule_seed = (self.cfg.schedule_id or "").strip()
                 self.cfg = new_cfg
+                self._refresh_portal_urls()
+
+                new_schedule_seed = (new_cfg.schedule_id or "").strip()
+                if new_schedule_seed and new_schedule_seed != self._schedule_id:
+                    self._schedule_id = new_schedule_seed
+                    self._api_session = None
+                    self._api_session_cookies_hash = None
+                    logging.info("Schedule ID seed updated from config reload: %s", new_schedule_seed)
+
+                if old_country != new_cfg.country_code:
+                    logging.info("Country code changed: %s → %s", old_country, new_cfg.country_code)
+                    self._api_session = None
+                    self._api_session_cookies_hash = None
+                    self.reset_driver()
+                elif old_schedule_seed != new_schedule_seed and new_schedule_seed:
+                    self._api_session = None
+                    self._api_session_cookies_hash = None
+
                 self._config_mtime = mtime
                 self._parse_prime_time_windows()
                 self._parse_excluded_windows()
@@ -1875,7 +1938,7 @@ class VisaAppointmentChecker:
             
         try:
             # Try accessing a known authenticated endpoint
-            driver.get("https://ais.usvisa-info.com/en-ca/niv/groups")
+            driver.get(f"{self._portal_url()}/groups")
             is_valid = "sign_in" not in driver.current_url.lower()
             if is_valid:
                 self._last_session_validation = datetime.now()
@@ -1890,8 +1953,9 @@ class VisaAppointmentChecker:
             logging.info("Valid session detected, skipping login workflow")
             return
             
-        logging.info("Navigating to login page: %s", LOGIN_URL)
-        self._safe_get(LOGIN_URL, detect_captcha=True)
+        login_url = self._login_target()
+        logging.info("Navigating to login page: %s", login_url)
+        self._safe_get(login_url, detect_captcha=True)
         self._dismiss_overlays()
         
         # Check if we're already authenticated by looking for dashboard/groups/schedule URLs
@@ -1929,7 +1993,7 @@ class VisaAppointmentChecker:
         self._handle_group_continue()
 
         schedule_found = False
-        for url in RESCHEDULE_URLS:
+        for url in self._reschedule_targets():
             try:
                 logging.info("Navigating to scheduling page candidate: %s", url)
                 self._safe_get(url)
@@ -3379,7 +3443,7 @@ class VisaAppointmentChecker:
                 (
                     "The AIS portal is showing a 'Scheduling Limit Warning' page that "
                     "requires you to solve a CAPTCHA before the bot can continue.\n\n"
-                    f"Please log in manually at {LOGIN_URL} and complete "
+                    f"Please log in manually at {self._login_target()} and complete "
                     "the CAPTCHA challenge on the scheduling page.\n\n"
                     f"The bot will automatically retry in {backoff_minutes} minutes. "
                     f"(This is consecutive occurrence #{consecutive}.)"
@@ -3769,6 +3833,11 @@ def main() -> None:
         default=6.0,
         help="Hours between progress report emails (default: 6). Set to 0 to disable.",
     )
+    parser.add_argument(
+        "--run-once",
+        action="store_true",
+        help="Run exactly one check cycle and exit (scheduler/task-friendly mode).",
+    )
     parser.set_defaults(headless=True)
     args = parser.parse_args()
     configure_logging(debug=args.debug, json_logs=args.json_logs)
@@ -3917,7 +3986,13 @@ def main() -> None:
                     )
                     print("💤 Sleeping (network recovery)...")
                     time.sleep(remaining)
+                    if args.run_once:
+                        break
                     continue
+
+            if args.run_once:
+                print("✅ --run-once mode complete. Exiting after a single cycle.")
+                break
 
             sleep_seconds = checker.compute_sleep_seconds(frequency)
             next_check = datetime.now() + timedelta(seconds=sleep_seconds)

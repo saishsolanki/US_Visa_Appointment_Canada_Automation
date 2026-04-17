@@ -10,6 +10,14 @@ password = your_ais_password
 current_appointment_date = 2025-12-01
 location = Ottawa - U.S. Embassy
 
+# AIS portal routing and IDs
+# COUNTRY_CODE controls regional portal path (e.g., en-ca, en-gb, en-cl)
+country_code = en-ca
+# Optional schedule id seed from /schedule/{id}/continue_actions URL
+schedule_id =
+# Optional facility id override (e.g., Toronto 94, Vancouver 95)
+facility_id =
+
 # Desired appointment window
 start_date = 2025-09-25
 end_date = 2025-12-31
@@ -78,6 +86,11 @@ webhook_url =
 # Get your user key at https://pushover.net/
 pushover_app_token =
 pushover_user_key =
+
+# SendGrid API notifications (alternative to SMTP for higher delivery reliability)
+sendgrid_api_key =
+sendgrid_from_email =
+sendgrid_to_email =
 
 # Auto-book time preference: any, morning, afternoon, evening
 preferred_time = any

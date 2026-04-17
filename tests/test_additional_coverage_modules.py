@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import browser_session
+import config_manager
 import config_wizard
 import logging_utils
 import notification_utils
@@ -204,6 +205,31 @@ def test_send_pushover_notification_success(monkeypatch: pytest.MonkeyPatch) -> 
     assert notification_utils.send_pushover_notification("app", "user", "S", "M") is True
 
 
+def test_send_sendgrid_notification_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    ok_resp = MagicMock()
+    ok_resp.status = 202
+    ok_resp.__enter__.return_value = ok_resp
+    ok_resp.__exit__.return_value = False
+    monkeypatch.setattr(notification_utils.urllib.request, "urlopen", lambda *a, **k: ok_resp)
+    assert notification_utils.send_sendgrid_notification("SG.key", "from@example.com", "to@example.com", "S", "M") is True
+
+
+def test_sendgrid_channel_in_send_all_notifications(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = SimpleNamespace(
+        telegram_bot_token="",
+        telegram_chat_id="",
+        webhook_url="",
+        pushover_app_token="",
+        pushover_user_key="",
+        sendgrid_api_key="SG.key",
+        sendgrid_from_email="from@example.com",
+        sendgrid_to_email="to@example.com",
+    )
+    monkeypatch.setattr(notification_utils, "send_notification", lambda *a, **k: False)
+    monkeypatch.setattr(notification_utils, "send_sendgrid_notification", lambda *a, **k: True)
+    assert notification_utils.send_all_notifications(cfg, "Sub", "Msg") is True
+
+
 def test_build_chrome_options_modes_and_headless(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MINIMAL_BROWSER", raising=False)
     monkeypatch.delenv("CHECKER_USER_AGENT", raising=False)
@@ -239,6 +265,9 @@ smtp_port = 587
             "new@example.com",  # EMAIL
             "2026-12-01",  # CURRENT_APPOINTMENT_DATE
             "Ottawa",  # LOCATION
+            "en-ca",  # COUNTRY_CODE
+            "",  # SCHEDULE_ID
+            "",  # FACILITY_ID
             "2026-10-01",  # START_DATE
             "2026-12-31",  # END_DATE
             "5",  # CHECK_FREQUENCY_MINUTES
@@ -252,6 +281,9 @@ smtp_port = 587
             "",  # AUDIO_ALERTS_ENABLED
             "",  # PUSHOVER_APP_TOKEN
             "",  # PUSHOVER_USER_KEY
+            "",  # SENDGRID_API_KEY
+            "",  # SENDGRID_FROM_EMAIL
+            "",  # SENDGRID_TO_EMAIL
             "",  # ACCOUNT_ROTATION_ENABLED
             "",  # ROTATION_ACCOUNTS
             "",  # ROTATION_INTERVAL_CHECKS
@@ -271,3 +303,27 @@ smtp_port = 587
     assert defaults["smtp_server"] == "smtp.office365.com"
     assert defaults["smtp_port"] == "587"
     assert defaults["notify_email"] == "smtp-user@example.com"
+
+
+def test_config_manager_case_insensitive_read_write(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.ini"
+    template_path = tmp_path / "template.ini"
+    template_path.write_text("[DEFAULT]\nemail = old@example.com\n", encoding="utf-8")
+
+    manager = config_manager.ConfigManager(str(config_path), str(template_path))
+    parser = manager.load_parser()
+    assert config_manager.ConfigManager.get_case_insensitive(parser, "EMAIL") == "old@example.com"
+
+    config_manager.ConfigManager.set_case_insensitive(parser, "EMAIL", "new@example.com")
+    manager.save_parser(parser)
+
+    reloaded = manager.load_parser()
+    assert config_manager.ConfigManager.get_case_insensitive(reloaded, "EMAIL") == "new@example.com"
+
+
+def test_config_manager_ui_values_include_defaults(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.ini"
+    manager = config_manager.ConfigManager(str(config_path), str(tmp_path / "missing-template.ini"))
+    values = manager.ui_values()
+    assert values["COUNTRY_CODE"] == "en-ca"
+    assert values["MAX_REQUESTS_PER_HOUR"] == "120"

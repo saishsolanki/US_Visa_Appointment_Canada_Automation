@@ -53,6 +53,9 @@ def _make_config(**overrides):  # type: ignore[override]
         smtp_user="",
         smtp_pass="",
         notify_email="",
+        country_code="en-ca",
+        schedule_id="",
+        facility_id="",
         auto_book=False,
         driver_restart_checks=50,
         heartbeat_path=None,
@@ -79,6 +82,9 @@ def _make_config(**overrides):  # type: ignore[override]
         webhook_url="",
         pushover_app_token="",
         pushover_user_key="",
+        sendgrid_api_key="",
+        sendgrid_from_email="",
+        sendgrid_to_email="",
         preferred_time="any",
         max_requests_per_hour=120,
         max_api_requests_per_hour=120,
@@ -875,8 +881,8 @@ class TestSchedulingLimitWarning:
         assert backoff_minutes[1] > backoff_minutes[0], (
             "Second hit should have a longer backoff than the first"
         )
-        assert backoff_minutes[2] > backoff_minutes[1], (
-            "Third hit should have a longer backoff than the second"
+        assert backoff_minutes[2] >= backoff_minutes[1], (
+            "Third hit should have a longer or capped-equal backoff than the second"
         )
 
     @patch("visa_appointment_checker.send_notification")

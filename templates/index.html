@@ -76,6 +76,18 @@
         <input type="text" id="LOCATION" name="LOCATION" value="{{ current.LOCATION }}" required>
         <small>The embassy/consulate location for your appointment (e.g., "Ottawa - U.S. Embassy") - check your current appointment details</small>
 
+        <label for="COUNTRY_CODE">AIS Country Code:</label>
+        <input type="text" id="COUNTRY_CODE" name="COUNTRY_CODE" value="{{ current.COUNTRY_CODE }}" placeholder="en-ca">
+        <small>Regional portal code (examples: en-ca for Canada, en-gb for UK)</small>
+
+        <label for="SCHEDULE_ID">Schedule ID (optional):</label>
+        <input type="text" id="SCHEDULE_ID" name="SCHEDULE_ID" value="{{ current.SCHEDULE_ID }}" placeholder="12345678">
+        <small>Numeric ID from your AIS continue actions URL: /schedule/{id}/continue_actions</small>
+
+        <label for="FACILITY_ID">Facility ID Override (optional):</label>
+        <input type="text" id="FACILITY_ID" name="FACILITY_ID" value="{{ current.FACILITY_ID }}" placeholder="94">
+        <small>Optional consulate facility ID override (Toronto=94, Vancouver=95)</small>
+
         <label for="START_DATE">Start Date (YYYY-MM-DD):</label>
         <input type="date" id="START_DATE" name="START_DATE" value="{{ current.START_DATE }}" required>
         <small>The earliest date you're willing to accept a new appointment</small>
@@ -190,6 +202,18 @@
         <label for="PUSHOVER_USER_KEY">Pushover User Key:</label>
         <input type="password" id="PUSHOVER_USER_KEY" name="PUSHOVER_USER_KEY" value="{{ current.PUSHOVER_USER_KEY }}" placeholder="uQiRzpo4DXghD...">
         <small>Your personal recipient key from pushover.net</small>
+
+        <label for="SENDGRID_API_KEY">SendGrid API Key:</label>
+        <input type="password" id="SENDGRID_API_KEY" name="SENDGRID_API_KEY" value="{{ current.SENDGRID_API_KEY }}" placeholder="SG.xxxxx">
+        <small>Optional API-based delivery channel, often more reliable than SMTP auth</small>
+
+        <label for="SENDGRID_FROM_EMAIL">SendGrid From Email:</label>
+        <input type="email" id="SENDGRID_FROM_EMAIL" name="SENDGRID_FROM_EMAIL" value="{{ current.SENDGRID_FROM_EMAIL }}" placeholder="alerts@example.com">
+        <small>Verified sender identity in your SendGrid account</small>
+
+        <label for="SENDGRID_TO_EMAIL">SendGrid To Email:</label>
+        <input type="email" id="SENDGRID_TO_EMAIL" name="SENDGRID_TO_EMAIL" value="{{ current.SENDGRID_TO_EMAIL }}" placeholder="you@example.com">
+        <small>Recipient for SendGrid API notifications</small>
 
         <h2 style="color: #F27D42; border-bottom: 2px solid #F27D42; padding-bottom: 5px;">🎯 Auto-Book Preferences</h2>
 
