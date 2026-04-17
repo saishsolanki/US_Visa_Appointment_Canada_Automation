@@ -1,153 +1,76 @@
 # Update Guide
 
-## 🚀 Quick Update (Recommended)
+## Quick Update
 
-On your server, run these commands in the installation directory:
+Run the unified update script:
 
 ```bash
 cd ~/nas_storage/US_Visa_Appointment_Canada_Automation
-
-# Make update script executable (first time only)
 chmod +x update.sh
-
-# Run update
 ./update.sh
 ```
 
-The update script will:
-- ✅ Backup your config.ini
-- ✅ Pull latest code from GitHub
-- ✅ Rebuild Docker container or update dependencies
-- ✅ Restart the service
-- ✅ Preserve your configuration
+This automatically:
+- ✅ Backs up your config.ini
+- ✅ Pulls latest code
+- ✅ Rebuilds Docker or updates dependencies
+- ✅ Restarts the service
 
 ---
 
-## 🐳 Manual Update (Docker)
+## Manual Updates by Deployment Method
 
-If you prefer to update manually:
-
+### Docker
 ```bash
 cd ~/nas_storage/US_Visa_Appointment_Canada_Automation
-
-# Backup your config
-cp config.ini config.ini.backup
-
-# Stop the running container
-docker compose down
-
-# Pull latest code
 git pull origin main
-
-# Rebuild the image (with no cache to ensure fresh build)
 docker compose build --no-cache
-
-# Start the updated container
 docker compose up -d
-
-# View logs to confirm it's working
 docker compose logs -f
 ```
 
----
-
-## 🛠️ Fix Current UID Error
-
-~~You encountered this error because UID 1000 is already taken.~~ **FIXED:** The permission error has been resolved by running the container as root (with security maintained through resource limits).
-
-To apply the latest fix:
-
+### Systemd (Native Linux)
 ```bash
 cd ~/nas_storage/US_Visa_Appointment_Canada_Automation
-
-# Pull the fix
 git pull origin main
-
-# Clean up old containers and images
-docker compose down
-docker rmi us_visa_appointment_canada_automation-visa-checker || true
-
-# Rebuild with the corrected Dockerfile
-docker compose build --no-cache
-
-# Start the container
-docker compose up -d
-
-# Verify it's working
-docker compose logs -f
-```
-
-The new Dockerfile eliminates user-related permission issues with mounted volumes while maintaining security through Docker's resource limits and network isolation.
-
----
-
-## ⚙️ Manual Update (Systemd Service)
-
-For native systemd installations:
-
-```bash
-cd ~/nas_storage/US_Visa_Appointment_Canada_Automation
-
-# Backup config
-cp config.ini config.ini.backup
-
-# Stop service
-sudo systemctl stop visa-checker
-
-# Pull latest code
-git pull origin main
-
-# Update Python packages
 source visa_env/bin/activate
 pip install --upgrade -r requirements.txt
-deactivate
-
-# Restart service
-sudo systemctl start visa-checker
-
-# Check status
+sudo systemctl restart visa-checker
 sudo systemctl status visa-checker
+```
+
+### Windows
+```batch
+cd US_Visa_Appointment_Canada_Automation
+git pull origin main
+python -m pip install --upgrade -r requirements.txt
+REM Restart your scheduled task or manual execution
 ```
 
 ---
 
-## 🔍 Verify Update Success
+## Verify Success
 
-### For Docker:
 ```bash
-# Check container is running
-docker compose ps
+# Docker
+docker compose logs --tail 20
 
-# View recent logs
-docker compose logs --tail 50
+# Systemd
+sudo journalctl -u visa-checker -n 20 -f
 
-# Watch live logs
-docker compose logs -f
-```
-
-### For Systemd:
-```bash
-# Check service status
-sudo systemctl status visa-checker
-
-# View logs
-sudo journalctl -u visa-checker -n 50 -f
+# Windows
+type logs\visa_checker.log | tail -20
 ```
 
 ---
 
-## 📋 What Gets Updated?
+## Troubleshooting
 
-When you update, these improvements will be applied:
+**Permission errors after update?** See [QUICK_FIX.md](QUICK_FIX.md)  
+**Email/notification issues?** See [GMAIL_SETUP_GUIDE.md](GMAIL_SETUP_GUIDE.md)  
+**Docker-specific issues?** See [DOCKER_GUIDE.md](DOCKER_GUIDE.md)  
+**General troubleshooting?** See [FAQ.md](FAQ.md)
 
-✅ **Enhanced Calendar Detection**
-- Better handling of busy state detection
-- Multiple fallback methods for opening calendar
-- Smarter detection of visible vs. hidden busy messages
-
-✅ **Improved Location Selection**
-- Facility ID mapping for Canadian embassies
-- Better fuzzy matching for location names
 - More reliable dropdown selection
 
 ✅ **Progress Reports** (New Feature!)

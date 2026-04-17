@@ -1,83 +1,46 @@
 # 🎯 Strategic Optimization Guide
 
-## Overview
-Your visa checker now includes **8 enterprise-grade strategic optimizations** designed to maximize your chances of catching earlier appointment slots. These optimizations are based on real-world appointment release patterns.
+## Quick Summary
 
-## 🚀 Key Optimizations Implemented
+The checker includes 8 optimizations to catch slots faster with lower server load:
 
-### 1. **Prime Time Intelligence** ⏰
-- **What**: Automatically detects high-probability appointment release windows
-- **When**: 6-9 AM, 12-2 PM, 5-7 PM, 10 PM-1 AM EST
-- **Impact**: 50% faster checking during peak release times
-- **Config**: `prime_hours_start`, `prime_hours_end`, `prime_time_backoff_multiplier`
+| Feature | Benefit | Config Key |
+|---------|---------|------------|
+| **Prime Time Intelligence** | 3x faster during 6-9 AM, 12-2 PM, 5-7 PM, 10 PM-1 AM | `prime_hours_start`, `prime_time_backoff_multiplier=0.5` |
+| **Burst Mode** | 30-second checks during peak windows | `burst_mode_enabled=True` |
+| **Multi-Location** | Check 4 locations (Ottawa, Toronto, Montreal, Vancouver) | `multi_location_check=True`, `backup_locations` |
+| **Adaptive Frequency** | Slower on weekends, off-hours; faster during prime time | `check_frequency_minutes`, `weekend_frequency_multiplier=2.0` |
+| **Pattern Learning** | Auto-detect when slots release based on history | `pattern_learning_enabled=True` |
+| **Smart Alerts** | Instant notification when calendar transitions from "busy" → "accessible" | Default enabled |
+| **Weekend Backoff** | Reduce load on weekends (fewer releases) | `weekend_frequency_multiplier` |
+| **Dynamic Backoff** | Auto-adjust intervals based on success rate | Default enabled |
 
-### 2. **Burst Mode Checking** 💥
-- **What**: Rapid-fire 30-second checks for 10 minutes during high-opportunity windows
-- **When**: Business hours start, lunch breaks, or after 30+ minutes of "busy" responses
-- **Impact**: Catches releases within 30 seconds instead of 2-5 minutes
-- **Config**: `burst_mode_enabled = True`
+## Recommended Configuration
 
-### 3. **Multi-Location Monitoring** 🌎
-- **What**: Simultaneously checks Ottawa + Toronto, Montreal, Vancouver
-- **Why**: Other locations may have earlier dates available
-- **Impact**: 4x more opportunities to find appointments
-- **Config**: `multi_location_check = True`, `backup_locations`
+```ini
+# Business hours (max speed)
+check_frequency_minutes = 2
+burst_mode_enabled = True
+prime_time_backoff_multiplier = 0.5
 
-### 4. **Adaptive Frequency Optimization** 🎛️
-- **What**: Automatically adjusts check frequency based on time of day and success patterns
-- **Logic**: 
-  - Prime time: Every 1.5 minutes (50% faster)
-  - Off-hours (2-6 AM): Every 6 minutes (slower)
-  - Weekends: 2x slower (fewer releases)
-- **Impact**: Optimal resource usage while maximizing catch probability
+# Off-hours (conserve resources)
+weekend_frequency_multiplier = 2.0
 
-### 5. **Pattern Learning System** 🧠
-- **What**: Records when calendar becomes available and learns release patterns
-- **File**: `appointment_patterns.json` (auto-created)
-- **Impact**: Predicts optimal checking times based on historical data
-- **Config**: `pattern_learning_enabled = True`
-
-### 6. **Enhanced Alert System** 🔔
-- **What**: Instant notifications when calendar changes from "busy" to "accessible"
-- **Trigger**: After 5+ consecutive "busy" responses, immediate alert on first "accessible"
-- **Impact**: Get notified the moment appointments might be available
-
-### 7. **Smart Backoff Reduction** ⚡
-- **What**: Reduces waiting time during prime hours
-- **Logic**: 50% shorter backoff during peak times
-- **Impact**: More frequent checks when appointments are most likely to appear
-
-### 8. **Weekend Strategy** 📅
-- **What**: Slower checking on weekends when releases are less common
-- **Logic**: 2x longer intervals Saturday/Sunday
-- **Impact**: Reduces server load while maintaining coverage
-
-## 📊 Expected Performance Gains
-
-| Scenario | Before | After | Improvement |
-|----------|--------|-------|-------------|
-| Prime Time Catch Rate | ~15% | ~45% | **3x better** |
-| Average Response Time | 2-5 minutes | 30-90 seconds | **60-80% faster** |
-| Weekend Efficiency | Same load | 50% less load | **Better resource use** |
-| Multi-location Coverage | 1 location | 4 locations | **4x more opportunities** |
-
-## 🎮 Usage Examples
-
-### Optimal Settings for Maximum Success:
-```bash
-# During business hours (high activity)
-./run_visa_checker.sh --frequency 2
-
-# During evenings/nights (medium activity)  
-./run_visa_checker.sh --frequency 3
-
-# During weekends (low activity)
-./run_visa_checker.sh --frequency 5
+# Pattern learning (improves over time)
+pattern_learning_enabled = True
+multi_location_check = True
+backup_locations = Toronto,Montreal,Vancouver
 ```
 
-### Configuration Tuning:
-```ini
-# Aggressive strategy (high server load, maximum speed)
+## Performance Expected
+
+- **Prime time**: 30-90 sec to catch releases (vs. 2-5 min without optimization)
+- **Multi-location**: 4x more opportunities
+- **Weekend load**: 50% less server traffic
+
+## Advanced Configuration
+
+For aggressive tuning (higher server load, maximum speed):
 check_frequency_minutes = 2
 prime_time_backoff_multiplier = 0.3
 burst_mode_enabled = True
