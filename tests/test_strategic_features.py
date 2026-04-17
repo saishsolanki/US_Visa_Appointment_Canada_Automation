@@ -1029,7 +1029,7 @@ class TestHeartbeatCounters:
         checker.cfg = cfg
 
         # Use mkstemp to avoid the race-condition security issue with mktemp
-        fd, tmp = tempfile.mkstemp(suffix=".json")
+        fd, tmp = tempfile.mkstemp(prefix="visa-heartbeat-", suffix=".json")
         os.close(fd)
         checker._heartbeat_path = Path(tmp)
 

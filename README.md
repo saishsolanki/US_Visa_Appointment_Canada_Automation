@@ -178,6 +178,27 @@ Then open http://127.0.0.1:5000 in your browser for the **enhanced strategic con
 - 🎯 **Prime Time Intelligence Settings** for optimal checking windows
 - ⚙️ **Performance Tuning Options** for advanced users
 
+#### Remote Monitoring From Another PC
+For secure visibility across machines:
+
+1. Bind the UI to all interfaces (or your Tailscale IP):
+```bash
+WEB_UI_HOST=0.0.0.0 WEB_UI_PORT=5000 python web_ui.py
+```
+2. Protect access with an auth token:
+```bash
+WEB_UI_TOKEN="set-a-long-random-token" WEB_UI_HOST=0.0.0.0 python web_ui.py
+```
+3. Open once with token to establish session:
+```text
+http://<server-ip>:5000/?token=<your-token>
+```
+
+Useful real-time endpoints:
+- `/logs` for live log stream (Server-Sent Events)
+- `/api/runtime` for service status + last log line
+- `/api/update/status` for update progress
+
 ### Method 2: Manual Configuration
 Copy `config.ini.template` to `config.ini` and edit with your details:
 

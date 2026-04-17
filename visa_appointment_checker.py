@@ -69,6 +69,14 @@ class CaptchaDetectedError(RuntimeError):
     """Raised when the AIS site presents a CAPTCHA that blocks automation."""
 
 
+class AccountLockedError(RuntimeError):
+    """Raised when the AIS site reports the account is temporarily locked."""
+
+    def __init__(self, message: str, unlock_at: Optional[datetime] = None) -> None:
+        super().__init__(message)
+        self.unlock_at = unlock_at
+
+
 class UiRateLimitError(RuntimeError):
     """Raised when UI navigation rate limits are reached."""
 
@@ -867,6 +875,7 @@ class VisaAppointmentChecker:
         self._consecutive_network_errors = 0
         self._last_successful_network_time: Optional[datetime] = None
         self._network_backoff_until: Optional[datetime] = None
+        self._account_lockout_until: Optional[datetime] = None
 
         # Scheduling limit warning tracking
         self._scheduling_limit_count = 0
@@ -2412,6 +2421,11 @@ class VisaAppointmentChecker:
             # Capture comprehensive debug info when widgets don't load
             self._capture_debug_state("widgets_not_loaded")
 
+            try:
+                self._detect_account_lockout()
+            except AccountLockedError:
+                raise
+
             # If anti-bot controls or scheduling-limit gates are shown, treat this
             # as a blocking condition (not a successful availability check).
             self._detect_captcha()
@@ -2433,6 +2447,8 @@ class VisaAppointmentChecker:
                 self._scheduling_limit_count += 1
                 self._handle_scheduling_limit_warning(driver)
             return
+
+        self._detect_account_lockout()
 
         # Widgets loaded successfully — clear any previous scheduling-limit streak
         if self._scheduling_limit_count > 0:
@@ -3253,6 +3269,120 @@ class VisaAppointmentChecker:
             return
         self._vpn_manager.handle_captcha_block()
 
+    def _parse_lockout_until(self, text: str) -> Optional[datetime]:
+        if not text:
+            return None
+
+        normalized = re.sub(r"\s+", " ", text.strip())
+        pattern = re.compile(
+            r"(?:your account is locked until|account locked until|locked until)\s+"
+            r"(?P<day>\d{1,2})\s+(?P<month>[A-Za-z]+),\s+(?P<year>\d{4}),\s+"
+            r"(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})\s+(?P<tz>[A-Z]{2,5})",
+            re.IGNORECASE,
+        )
+        match = pattern.search(normalized)
+        if not match:
+            return None
+
+        try:
+            naive = datetime.strptime(
+                f"{match.group('day')} {match.group('month')} {match.group('year')}, "
+                f"{match.group('hour')}:{match.group('minute')}:{match.group('second')}",
+                "%d %B %Y, %H:%M:%S",
+            )
+        except ValueError:
+            return None
+
+        tz_name = match.group("tz").upper()
+        tz_map = {
+            "CST": -6,
+            "CDT": -5,
+            "EST": -5,
+            "EDT": -4,
+            "MST": -7,
+            "MDT": -6,
+            "PST": -8,
+            "PDT": -7,
+            "UTC": 0,
+            "GMT": 0,
+        }
+
+        aware = None
+        if ZoneInfo is not None:
+            try:
+                if tz_name in {"CST", "CDT"}:
+                    aware = naive.replace(tzinfo=ZoneInfo("America/Chicago"))
+                elif tz_name in {"EST", "EDT"}:
+                    aware = naive.replace(tzinfo=ZoneInfo("America/New_York"))
+                elif tz_name in {"MST", "MDT"}:
+                    aware = naive.replace(tzinfo=ZoneInfo("America/Denver"))
+                elif tz_name in {"PST", "PDT"}:
+                    aware = naive.replace(tzinfo=ZoneInfo("America/Los_Angeles"))
+                elif tz_name in {"UTC", "GMT"}:
+                    aware = naive.replace(tzinfo=ZoneInfo("UTC"))
+            except Exception:  # noqa: BLE001
+                aware = None
+
+        if aware is None and tz_name in tz_map:
+            aware = naive.replace(tzinfo=timezone(timedelta(hours=tz_map[tz_name])))
+
+        if aware is None:
+            return naive
+
+        if ZoneInfo is not None:
+            try:
+                local_tz = ZoneInfo(self.cfg.timezone)
+                return aware.astimezone(local_tz).replace(tzinfo=None)
+            except Exception:  # noqa: BLE001
+                pass
+
+        return aware.replace(tzinfo=None)
+
+    def _raise_account_lockout(self, unlock_at: Optional[datetime], driver: Optional[webdriver.Chrome] = None) -> None:
+        if unlock_at is None:
+            unlock_at = self._now() + timedelta(hours=6)
+        self._account_lockout_until = unlock_at
+        logging.warning(
+            "Account lockout detected; pausing checks until %s",
+            unlock_at.strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        self._audio_alert("account locked")
+        send_notification(
+            self.cfg,
+            "🔒 Account Locked - Bot Paused",
+            (
+                "The AIS account appears locked, so the checker will pause automatically.\n\n"
+                f"Unlock time: {unlock_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                "The bot will not keep retrying while the lock is active."
+            ),
+        )
+        raise AccountLockedError(
+            f"AIS account locked until {unlock_at.strftime('%Y-%m-%d %H:%M:%S')}",
+            unlock_at=unlock_at,
+        )
+
+    def _detect_account_lockout(self) -> Optional[datetime]:
+        driver = self.ensure_driver()
+        try:
+            title = driver.title or ""
+        except WebDriverException:
+            title = ""
+        try:
+            source = driver.page_source or ""
+        except WebDriverException:
+            source = ""
+
+        combined = f"{title}\n{source}"
+        markers = (
+            "your account is locked until",
+            "account locked until",
+            "locked until",
+        )
+        if any(marker in combined.lower() for marker in markers):
+            unlock_at = self._parse_lockout_until(combined)
+            self._raise_account_lockout(unlock_at, driver)
+        return None
+
     def _safe_get(self, url: str, *, attempts: Optional[int] = None, detect_captcha: bool = False) -> None:
         driver = self.ensure_driver()
         total_attempts = attempts or self.cfg.max_retry_attempts
@@ -3262,10 +3392,16 @@ class VisaAppointmentChecker:
             try:
                 driver.get(url)
                 self._wait_for_page_ready(driver)
+                self._detect_account_lockout()
                 if detect_captcha:
                     self._detect_captcha()
                 self._record_network_success()
                 return
+            except AccountLockedError as exc:
+                last_exc = exc
+                logging.warning("Account lockout encountered while loading %s: %s", url, exc)
+                self._record_network_success()
+                break
             except CaptchaDetectedError as exc:
                 last_exc = exc
                 logging.warning("Captcha encountered while loading %s: %s", url, exc)
@@ -3294,7 +3430,7 @@ class VisaAppointmentChecker:
                 )
                 time.sleep(sleep_seconds)
 
-        if last_exc and not isinstance(last_exc, CaptchaDetectedError) and not self._is_network_error(last_exc):
+        if last_exc and not isinstance(last_exc, (CaptchaDetectedError, AccountLockedError)) and not self._is_network_error(last_exc):
             self._capture_artifact("navigation_failure")
         if last_exc:
             raise last_exc
@@ -3919,6 +4055,15 @@ def main() -> None:
             checker._rotate_account_if_needed(check_count)
 
             # ---- Network pre-check ----
+            if checker._account_lockout_until and datetime.now() < checker._account_lockout_until:
+                wait_secs = (checker._account_lockout_until - datetime.now()).total_seconds()
+                print(
+                    f"🔒 Account locked — sleeping {int(wait_secs)}s "
+                    f"(until {checker._account_lockout_until.strftime('%Y-%m-%d %H:%M:%S')})"
+                )
+                time.sleep(max(1, wait_secs))
+                continue
+
             # If we are in a network-backoff window, wait it out before
             # burning a Chrome launch + page load cycle.
             if checker._network_backoff_until and datetime.now() < checker._network_backoff_until:
@@ -3953,6 +4098,8 @@ def main() -> None:
                 print(f"✅ Check #{check_count} completed successfully")
                 success = True
                 checker._record_network_success()
+            except AccountLockedError as exc:
+                print(f"🔒 Check #{check_count} paused due to account lock: {exc}")
             except UiRateLimitError as exc:
                 print(f"⏸️ Check #{check_count} skipped due to UI rate limit: {exc}")
             except CaptchaDetectedError as exc:

@@ -1,13 +1,18 @@
-from flask import Flask, request, render_template, redirect, url_for, flash, jsonify, Response, stream_with_context
+from flask import Flask, request, render_template, redirect, url_for, flash, jsonify, Response, stream_with_context, session
+import argparse
+import hmac
 import os
 import subprocess
 import threading
 import time
+from urllib.parse import urlsplit
 
 from config_manager import BOOLEAN_KEYS, CONFIG_KEYS, ConfigManager
 
 app = Flask(__name__)
 app.secret_key = os.urandom(32)
+
+_ACCESS_TOKEN = (os.getenv("WEB_UI_TOKEN") or "").strip()
 
 # Path to the log file produced by logging_utils.py
 _LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "visa_checker.log")
@@ -18,6 +23,93 @@ _update_lock = threading.Lock()
 _update_running = False
 
 CONFIG_MANAGER = ConfigManager()
+
+
+def _is_token_valid(candidate: str) -> bool:
+    if not _ACCESS_TOKEN:
+        return True
+    if not candidate:
+        return False
+    return hmac.compare_digest(candidate, _ACCESS_TOKEN)
+
+
+def _safe_next_target(raw_target: str) -> str:
+    target = (raw_target or "").strip()
+    if not target:
+        return url_for("index")
+    if not target.startswith("/"):
+        return url_for("index")
+    parsed = urlsplit(target)
+    if parsed.netloc or parsed.scheme:
+        return url_for("index")
+    if parsed.path in {"/login", "/logout"}:
+        return url_for("index")
+    return parsed.path or url_for("index")
+
+
+@app.before_request
+def _optional_token_auth():
+    """Require token auth when WEB_UI_TOKEN is configured.
+
+    Works with either:
+    - query/form param: token
+    - header: X-Access-Token
+    - session after first successful auth
+    """
+    if not _ACCESS_TOKEN:
+        return None
+
+    if request.endpoint in {"login", "logout", "static"}:
+        return None
+
+    if session.get("web_ui_authed") is True:
+        return None
+
+    supplied = (
+        request.headers.get("X-Access-Token", "")
+        or request.args.get("token", "")
+        or request.form.get("token", "")
+    )
+    if _is_token_valid(supplied):
+        session["web_ui_authed"] = True
+        return None
+
+    wants_html = request.accept_mimetypes.best_match(["text/html", "application/json"]) == "text/html"
+    if wants_html and not request.path.startswith("/api/"):
+        return redirect(url_for("login", next=request.path))
+
+    return (
+        jsonify(
+            {
+                "error": "unauthorized",
+                "message": "Set WEB_UI_TOKEN and access using ?token=... or X-Access-Token header.",
+            }
+        ),
+        401,
+    )
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Browser-friendly login page for token-gated access."""
+    if request.method == 'POST':
+        token = request.form.get('token', '').strip()
+        next_url = _safe_next_target(request.form.get('next', ''))
+        if _is_token_valid(token):
+            session['web_ui_authed'] = True
+            flash('Access granted.', 'success')
+            return redirect(next_url)
+        flash('Invalid token.', 'error')
+
+    next_url = _safe_next_target(request.args.get('next', ''))
+    return render_template('login.html', next_url=next_url, token_required=bool(_ACCESS_TOKEN))
+
+
+@app.route('/logout')
+def logout():
+    session.pop('web_ui_authed', None)
+    flash('Logged out.', 'success')
+    return redirect(url_for('login'))
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -241,6 +333,45 @@ def api_update_status():
     return jsonify({'running': running, 'output': output})
 
 
+@app.route('/api/runtime')
+def api_runtime():
+    """Return lightweight runtime visibility for remote monitoring."""
+    checker_status = "unknown"
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", "visa-checker.service"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if result.returncode == 0:
+            checker_status = (result.stdout or "").strip() or "active"
+        else:
+            checker_status = (result.stdout or result.stderr or "unknown").strip() or "unknown"
+    except Exception as exc:  # noqa: BLE001
+        checker_status = f"unknown ({exc})"
+
+    last_log_line = ""
+    try:
+        if os.path.exists(_LOG_PATH):
+            with open(_LOG_PATH, 'r', encoding='utf-8', errors='replace') as handle:
+                lines = handle.readlines()
+            if lines:
+                last_log_line = lines[-1].rstrip()
+    except Exception:  # noqa: BLE001
+        last_log_line = ""
+
+    return jsonify(
+        {
+            "checker_service": checker_status,
+            "log_path": _LOG_PATH,
+            "last_log_line": last_log_line,
+            "update_running": _update_running,
+            "timestamp": int(time.time()),
+        }
+    )
+
+
 def _append_output(text: str) -> None:
     with _update_lock:
         _update_output.append(text)
@@ -251,6 +382,20 @@ def _append_output(text: str) -> None:
 
 if __name__ == '__main__':
     import socket
+
+    parser = argparse.ArgumentParser(description="US Visa Checker Web UI")
+    parser.add_argument(
+        "--host",
+        default=os.getenv("WEB_UI_HOST", "127.0.0.1"),
+        help="Host interface to bind (default: 127.0.0.1, use 0.0.0.0 for remote access)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.getenv("WEB_UI_PORT", "5000")),
+        help="Port to bind (default: 5000)",
+    )
+    args = parser.parse_args()
     
     # Try to find an available port
     def find_free_port():
@@ -260,10 +405,10 @@ if __name__ == '__main__':
             port = s.getsockname()[1]
         return port
     
-    port = 5000
+    port = args.port
     try:
-        app.run(debug=False, port=port, host='127.0.0.1')
+        app.run(debug=False, port=port, host=args.host)
     except OSError:
         port = find_free_port()
-        print(f"Port 5000 is in use, trying port {port}")
-        app.run(debug=False, port=port, host='127.0.0.1')
+        print(f"Port {args.port} is in use, trying port {port}")
+        app.run(debug=False, port=port, host=args.host)
