@@ -4,12 +4,15 @@ import configparser
 import json
 import logging
 import smtplib
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import browser_session
 import config_manager

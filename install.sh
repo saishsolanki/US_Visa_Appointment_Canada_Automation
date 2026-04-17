@@ -43,6 +43,34 @@ else
     exit 1
 fi
 
+if [[ "$PKG_MANAGER" == "apt" ]]; then
+    APT_COMMON_OPTS=("-o" "Acquire::ForceIPv4=true" "-o" "Acquire::Retries=5" "-o" "Acquire::http::Timeout=30")
+fi
+
+retry_cmd() {
+    local attempts="$1"
+    shift
+    local i
+    for ((i = 1; i <= attempts; i++)); do
+        if "$@"; then
+            return 0
+        fi
+        if (( i < attempts )); then
+            echo -e "${YELLOW}⚠ Attempt ${i}/${attempts} failed, retrying in 5s...${NC}"
+            sleep 5
+        fi
+    done
+    return 1
+}
+
+apt_update_retry() {
+    retry_cmd 3 sudo apt-get "${APT_COMMON_OPTS[@]}" update
+}
+
+apt_install_retry() {
+    retry_cmd 3 sudo apt-get "${APT_COMMON_OPTS[@]}" install -y --fix-missing "$@"
+}
+
 # Get the script directory (works for both curl pipe and direct run)
 SCRIPT_DIR="$(pwd)"
 if [[ -f "visa_appointment_checker.py" ]]; then
@@ -72,13 +100,13 @@ case $install_choice in
             
             if [[ "$PKG_MANAGER" == "apt" ]]; then
                 # Install Docker prerequisites
-                sudo apt-get update
-                sudo apt-get install -y ca-certificates curl gnupg
+                apt_update_retry
+                apt_install_retry ca-certificates curl gnupg
                 
                 # Add Docker's GPG key
                 sudo install -m 0755 -d /etc/apt/keyrings
                 if [[ ! -f /etc/apt/keyrings/docker.asc ]]; then
-                    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.asc
+                    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor --batch --yes -o /etc/apt/keyrings/docker.asc
                     sudo chmod a+r /etc/apt/keyrings/docker.asc
                 fi
                 
@@ -86,8 +114,8 @@ case $install_choice in
                 echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
                 
                 # Install Docker
-                sudo apt-get update
-                sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+                apt_update_retry
+                apt_install_retry docker-ce docker-ce-cli containerd.io docker-compose-plugin
             elif [[ "$PKG_MANAGER" == "dnf" ]]; then
                 sudo dnf -y install dnf-plugins-core
                 sudo dnf config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo
@@ -183,8 +211,8 @@ case $install_choice in
         # Install system dependencies
         echo -e "${YELLOW}Installing system dependencies...${NC}"
         if [[ "$PKG_MANAGER" == "apt" ]]; then
-            sudo apt-get update
-            sudo apt-get install -y python3 python3-pip python3-venv wget gnupg curl
+            apt_update_retry
+            apt_install_retry python3 python3-pip python3-venv wget gnupg curl
         elif [[ "$PKG_MANAGER" == "dnf" ]]; then
             sudo dnf install -y python3 python3-pip wget curl
         elif [[ "$PKG_MANAGER" == "pacman" ]]; then
@@ -195,10 +223,10 @@ case $install_choice in
         if ! command -v google-chrome &> /dev/null; then
             echo -e "${YELLOW}Installing Google Chrome...${NC}"
             if [[ "$PKG_MANAGER" == "apt" ]]; then
-                wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
+                wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor --batch --yes -o /usr/share/keyrings/google-chrome.gpg
                 echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
-                sudo apt-get update
-                sudo apt-get install -y google-chrome-stable
+                apt_update_retry
+                apt_install_retry google-chrome-stable
             elif [[ "$PKG_MANAGER" == "dnf" ]]; then
                 sudo dnf install -y fedora-workstation-repositories 2>/dev/null || true
                 sudo dnf config-manager --set-enabled google-chrome 2>/dev/null || \

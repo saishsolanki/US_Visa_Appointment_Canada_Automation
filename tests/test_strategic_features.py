@@ -188,7 +188,8 @@ class TestPatternWeight:
         assert checker._calculate_pattern_weight() == 1.0
 
     def test_high_success_lowers_weight(self):
-        now = datetime.now()
+        checker = self._make_checker(history=[])
+        now = checker._now()
         events = [
             {"hour": now.hour, "day_of_week": now.weekday(), "event": "accessible"}
             for _ in range(15)
@@ -198,7 +199,8 @@ class TestPatternWeight:
         assert weight < 1.0, f"Expected weight < 1.0 for high success, got {weight}"
 
     def test_low_success_raises_weight(self):
-        now = datetime.now()
+        checker = self._make_checker(history=[])
+        now = checker._now()
         events = [
             {"hour": now.hour, "day_of_week": now.weekday(), "event": "busy"}
             for _ in range(15)
