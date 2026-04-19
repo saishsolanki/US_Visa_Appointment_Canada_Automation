@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import configparser
+import logging
 from pathlib import Path
 from typing import Dict, Mapping
 
+from slot_ledger import default_slot_ledger_db_path
+
 
 CONFIG_KEYS = [
+    "CONFIG_VERSION",
     "EMAIL", "PASSWORD", "CURRENT_APPOINTMENT_DATE", "LOCATION",
     "COUNTRY_CODE", "SCHEDULE_ID", "FACILITY_ID",
     "START_DATE", "END_DATE", "CHECK_FREQUENCY_MINUTES",
@@ -21,6 +25,7 @@ CONFIG_KEYS = [
     "PREFERRED_TIME", "MAX_REQUESTS_PER_HOUR", "MAX_API_REQUESTS_PER_HOUR",
     "MAX_UI_NAVIGATIONS_PER_HOUR", "SLOT_TTL_HOURS", "DRIVER_RESTART_CHECKS",
     "MAX_RETRY_ATTEMPTS", "SLEEP_JITTER_SECONDS", "TEST_MODE",
+    "TEST_MODE_SEND_NOTIFICATIONS", "SLOT_LEDGER_DB_PATH",
     "EXCLUDED_DATE_RANGES", "SAFETY_FIRST_MODE", "SAFETY_FIRST_MIN_INTERVAL_MINUTES",
     "AUDIO_ALERTS_ENABLED", "ACCOUNT_ROTATION_ENABLED", "ROTATION_ACCOUNTS",
     "ROTATION_INTERVAL_CHECKS", "VPN_PROVIDER", "VPN_CLI_PATH", "VPN_SERVER",
@@ -32,12 +37,14 @@ CONFIG_KEYS = [
 BOOLEAN_KEYS = {
     "AUTO_BOOK", "BURST_MODE_ENABLED", "MULTI_LOCATION_CHECK",
     "PATTERN_LEARNING_ENABLED", "AUTO_BOOK_DRY_RUN", "TEST_MODE",
+    "TEST_MODE_SEND_NOTIFICATIONS",
     "SAFETY_FIRST_MODE", "AUDIO_ALERTS_ENABLED", "ACCOUNT_ROTATION_ENABLED",
     "VPN_REQUIRE_CONNECTED", "VPN_ROTATE_ON_CAPTCHA", "VPN_RECONNECT_ON_NETWORK_ERROR",
 }
 
 
 DEFAULTS = {
+    "CONFIG_VERSION": "2",
     "COUNTRY_CODE": "en-ca",
     "SCHEDULE_ID": "",
     "FACILITY_ID": "",
@@ -74,6 +81,8 @@ DEFAULTS = {
     "MAX_RETRY_ATTEMPTS": "2",
     "SLEEP_JITTER_SECONDS": "60",
     "TEST_MODE": "False",
+    "TEST_MODE_SEND_NOTIFICATIONS": "False",
+    "SLOT_LEDGER_DB_PATH": str(default_slot_ledger_db_path()),
     "EXCLUDED_DATE_RANGES": "",
     "SAFETY_FIRST_MODE": "False",
     "SAFETY_FIRST_MIN_INTERVAL_MINUTES": "10",
@@ -90,6 +99,17 @@ DEFAULTS = {
     "VPN_RECONNECT_ON_NETWORK_ERROR": "True",
     "VPN_MIN_SESSION_MINUTES": "10",
 }
+
+
+CURRENT_CONFIG_VERSION = 2
+CONFIG_VERSION_KEY = "CONFIG_VERSION"
+
+
+def _parse_config_version(raw: str) -> int:
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return 1
 
 
 class ConfigManager:
@@ -114,7 +134,47 @@ class ConfigManager:
         parser.read(self.config_path, encoding="utf-8")
         if "DEFAULT" not in parser:
             parser["DEFAULT"] = {}
+
+        if self._apply_migrations(parser):
+            try:
+                self.save_parser(parser)
+            except OSError as exc:
+                logging.warning(
+                    "Config migration changes were applied in memory but could not be persisted to %s: %s",
+                    self.config_path,
+                    exc,
+                )
         return parser
+
+    def _apply_migrations(self, parser: configparser.ConfigParser) -> bool:
+        """Apply versioned config migrations and fill missing keys safely."""
+        changed = False
+        if "DEFAULT" not in parser:
+            parser["DEFAULT"] = {}
+            changed = True
+
+        prior_version = _parse_config_version(
+            self.get_case_insensitive(parser, CONFIG_VERSION_KEY, "1")
+        )
+
+        for key, value in DEFAULTS.items():
+            if self.get_case_insensitive(parser, key, "") == "":
+                self.set_case_insensitive(parser, key, value)
+                changed = True
+
+        if prior_version < 2:
+            if not self.get_case_insensitive(parser, "SLOT_LEDGER_DB_PATH", "").strip():
+                self.set_case_insensitive(parser, "SLOT_LEDGER_DB_PATH", str(default_slot_ledger_db_path()))
+                changed = True
+            if not self.get_case_insensitive(parser, "TEST_MODE_SEND_NOTIFICATIONS", "").strip():
+                self.set_case_insensitive(parser, "TEST_MODE_SEND_NOTIFICATIONS", "False")
+                changed = True
+
+        if prior_version != CURRENT_CONFIG_VERSION:
+            self.set_case_insensitive(parser, CONFIG_VERSION_KEY, str(CURRENT_CONFIG_VERSION))
+            changed = True
+
+        return changed
 
     def save_parser(self, parser: configparser.ConfigParser) -> None:
         with self.config_path.open("w", encoding="utf-8") as handle:

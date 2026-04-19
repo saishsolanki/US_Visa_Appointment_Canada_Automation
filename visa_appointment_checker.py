@@ -1,5 +1,4 @@
 import argparse
-import configparser
 import json
 import logging
 import os
@@ -10,6 +9,7 @@ import socket
 import sys
 import threading
 import time
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -44,11 +44,12 @@ from selenium.common.exceptions import (
 from webdriver_manager.chrome import ChromeDriverManager
 from browser_session import build_chrome_options
 from config_wizard import run_cli_setup_wizard as run_cli_setup_wizard_external
+from config_manager import ConfigManager
 from logging_utils import LOG_PATH, ARTIFACTS_DIR, configure_logging
 from notification_utils import send_all_notifications
 from scheduling_utils import compute_sleep_seconds as compute_sleep_seconds_external
 from selector_registry import apply_selector_overrides
-from slot_ledger import SlotLedger
+from slot_ledger import SlotLedger, default_slot_ledger_db_path, initialize_slot_ledger_path
 from vpn_utils import ProtonVpnManager
 
 # Keep webdriver-manager quiet unless user overrides
@@ -63,6 +64,20 @@ else:
     winsound = None
 
 Selector = Tuple[str, str]
+
+
+class WarningArtifactHandler(logging.Handler):
+    """Capture a warning screenshot whenever a WARNING+ log record is emitted."""
+
+    def __init__(self, checker) -> None:
+        super().__init__(level=logging.WARNING)
+        self._checker = checker
+
+    def emit(self, record: logging.LogRecord) -> None:
+        checker = self._checker
+        if checker is None or record.levelno < logging.WARNING:
+            return
+        checker._capture_warning_artifact_for_record(record)
 
 
 class CaptchaDetectedError(RuntimeError):
@@ -142,7 +157,9 @@ class CheckerConfig:
     slot_ttl_hours: int
     # Safety and advanced behaviors
     test_mode: bool
+    test_mode_send_notifications: bool
     excluded_date_ranges: str
+    slot_ledger_db_path: str
     safety_first_mode: bool
     safety_first_min_interval_minutes: int
     audio_alerts_enabled: bool
@@ -161,14 +178,8 @@ class CheckerConfig:
 
     @classmethod
     def load(cls, path: str = "config.ini") -> "CheckerConfig":
-        parser = configparser.ConfigParser()
-        parser.optionxform = str
-
-        if not parser.read(path):
-            raise FileNotFoundError(
-                f"Unable to load configuration. Expected file at '{path}'. "
-                "Run '--setup', configure.sh, the installer, or the web UI to create one."
-            )
+        manager = ConfigManager(config_path=path, template_path="config.ini.template")
+        parser = manager.load_parser()
 
         if "DEFAULT" not in parser:
             raise KeyError("Configuration missing DEFAULT section.")
@@ -207,8 +218,13 @@ class CheckerConfig:
             return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
         def _get_int(key: str, fallback: Optional[int] = None) -> int:
+            raw = _get(key, str(fallback) if fallback is not None else None)
+            if raw == "":
+                if fallback is None:
+                    raise ValueError(f"{key} must be an integer")
+                return int(fallback)
             try:
-                return int(_get(key, str(fallback) if fallback is not None else None))
+                return int(raw)
             except ValueError as exc:  # noqa: B904
                 raise ValueError(f"{key} must be an integer") from exc
 
@@ -238,8 +254,13 @@ class CheckerConfig:
             raise ValueError("Invalid configuration:\n- " + "\n- ".join(validation_errors))
 
         def _get_float(key: str, fallback: Optional[float] = None) -> float:
+            raw = _get(key, str(fallback) if fallback is not None else None)
+            if raw == "":
+                if fallback is None:
+                    raise ValueError(f"{key} must be a float")
+                return float(fallback)
             try:
-                return float(_get(key, str(fallback) if fallback is not None else None))
+                return float(raw)
             except ValueError as exc:  # noqa: B904
                 raise ValueError(f"{key} must be a float") from exc
 
@@ -305,7 +326,9 @@ class CheckerConfig:
             slot_ttl_hours=max(1, _get_int("SLOT_TTL_HOURS", 24)),
             # Safety and advanced behaviors
             test_mode=_to_bool(_get("TEST_MODE", "False")),
+            test_mode_send_notifications=_to_bool(_get("TEST_MODE_SEND_NOTIFICATIONS", "False")),
             excluded_date_ranges=_get("EXCLUDED_DATE_RANGES", ""),
+            slot_ledger_db_path=_get("SLOT_LEDGER_DB_PATH", str(default_slot_ledger_db_path())),
             safety_first_mode=_to_bool(_get("SAFETY_FIRST_MODE", "False")),
             safety_first_min_interval_minutes=max(1, _get_int("SAFETY_FIRST_MIN_INTERVAL_MINUTES", 10)),
             audio_alerts_enabled=_to_bool(_get("AUDIO_ALERTS_ENABLED", "False")),
@@ -333,6 +356,45 @@ class CheckerConfig:
         return True
 
     @staticmethod
+    def _looks_like_placeholder(value: str) -> bool:
+        raw = (value or "").strip().lower()
+        if not raw:
+            return True
+        placeholder_markers = (
+            "your_",
+            "example.com",
+            "changeme",
+            "change_me",
+            "replace_me",
+            "placeholder",
+        )
+        return any(marker in raw for marker in placeholder_markers)
+
+    def placeholder_credential_issues(self) -> List[str]:
+        issues: List[str] = []
+        if self._looks_like_placeholder(self.email):
+            issues.append("EMAIL still looks like a placeholder value")
+        if self._looks_like_placeholder(self.password):
+            issues.append("PASSWORD still looks like a placeholder value")
+        if self._looks_like_placeholder(self.smtp_user):
+            issues.append("SMTP_USER still looks like a placeholder value")
+        if self._looks_like_placeholder(self.smtp_pass):
+            issues.append("SMTP_PASS still looks like a placeholder value")
+        if self._looks_like_placeholder(self.notify_email):
+            issues.append("NOTIFY_EMAIL still looks like a placeholder value")
+        return issues
+
+    def ensure_runtime_credentials_ready(self) -> None:
+        issues = self.placeholder_credential_issues()
+        if issues:
+            joined = "\n- ".join(issues)
+            raise ValueError(
+                "Placeholder credentials detected before startup. "
+                "Run '--setup' or update config.ini with real values:\n"
+                f"- {joined}"
+            )
+
+    @staticmethod
     def _mask(value: str, *, keep: int = 2) -> str:
         if not value:
             return ""
@@ -357,6 +419,14 @@ class CheckerConfig:
 
 
 def send_notification(cfg: CheckerConfig, subject: str, message: str) -> bool:
+    if getattr(cfg, "test_mode", False) and not getattr(cfg, "test_mode_send_notifications", False):
+        logging.info(
+            "Test mode is active and TEST_MODE_SEND_NOTIFICATIONS is disabled; "
+            "suppressing outbound notification: %s",
+            subject,
+        )
+        logging.info("Suppressed notification body: %s", message)
+        return False
     return send_all_notifications(cfg, subject, message)
 
 
@@ -660,6 +730,16 @@ class VisaAppointmentChecker:
         (By.XPATH, "//input[@value='Sign In']"),
     ]
 
+    # Debug-only selectors for accurately identifying login-page sign-in controls.
+    SIGN_IN_FORM_ONLY_SELECTORS: List[Selector] = [
+        (By.CSS_SELECTOR, "form[action*='sign_in'] input[type='submit']"),
+        (By.CSS_SELECTOR, "form[action*='sign_in'] button[type='submit']"),
+        (
+            By.XPATH,
+            "//form[contains(@action, 'sign_in')]//*[self::button or (self::input and @type='submit')]",
+        ),
+    ]
+
     COOKIE_SELECTORS: List[Selector] = [
         (By.ID, "onetrust-accept-btn-handler"),
         (By.CSS_SELECTOR, "button[aria-label='Accept all']"),
@@ -675,6 +755,39 @@ class VisaAppointmentChecker:
         (By.CSS_SELECTOR, "[role='alert']"),
         (By.CSS_SELECTOR, ".flash"),
         (By.CSS_SELECTOR, ".error, .errors"),
+    ]
+
+    SESSION_EXPIRED_TEXT_MARKERS: Tuple[str, ...] = (
+        "your session has expired",
+        "session has expired",
+        "please log back in to continue",
+        "log back in to continue",
+    )
+
+    SESSION_EXPIRED_TEXT_SELECTORS: List[Selector] = [
+        (By.CSS_SELECTOR, ".swal2-popup"),
+        (By.CSS_SELECTOR, ".swal2-html-container"),
+        (By.CSS_SELECTOR, ".modal-body"),
+        (By.CSS_SELECTOR, ".ui-dialog-content"),
+        (By.CSS_SELECTOR, "[role='dialog']"),
+        (
+            By.XPATH,
+            "//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'session has expired')]",
+        ),
+    ]
+
+    SESSION_EXPIRED_ACK_SELECTORS: List[Selector] = [
+        (By.CSS_SELECTOR, "button.swal2-confirm"),
+        (By.XPATH, "//button[normalize-space()='OK']"),
+        (By.XPATH, "//a[normalize-space()='OK']"),
+        (
+            By.XPATH,
+            "//button[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'continue')]",
+        ),
+        (
+            By.XPATH,
+            "//input[@type='submit' and contains(translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'continue')]",
+        ),
     ]
 
     PRIVACY_CHECKBOX_SELECTORS: List[Selector] = [
@@ -729,11 +842,9 @@ class VisaAppointmentChecker:
     APPOINTMENT_FORM_SELECTORS: List[Selector] = [
         (By.ID, "appointment-form"),
         (By.CSS_SELECTOR, "form#appointment-form"),
-        (By.CSS_SELECTOR, "form[action*='appointment']"),
-        (By.CSS_SELECTOR, "fieldset.fieldset legend"),
-        (By.XPATH, "//legend[contains(text(), 'Consular Section Appointment')]"),
         (By.CSS_SELECTOR, "#consulate-appointment-fields"),
         (By.ID, "appointments_consulate_appointment_facility_id"),
+        (By.ID, "appointments_consulate_appointment_date"),
     ]
 
     LOCATION_SELECTORS: List[Selector] = [
@@ -766,6 +877,14 @@ class VisaAppointmentChecker:
         (By.CSS_SELECTOR, "select[name='appointments[consulate_appointment][time]']"),
     ]
 
+    # Strict widgets that indicate the real appointment scheduling form is loaded.
+    APPOINTMENT_WIDGET_SELECTORS: List[Selector] = [
+        (By.ID, "appointments_consulate_appointment_facility_id"),
+        (By.ID, "appointments_consulate_appointment_date"),
+        (By.ID, "appointments_consulate_appointment_time"),
+        (By.ID, "consulate_date_time_not_available"),
+    ]
+
     DATEPICKER_CONTAINER_SELECTORS: List[Selector] = [
         (By.ID, "ui-datepicker-div"),
         (By.CSS_SELECTOR, "#ui-datepicker-div"),
@@ -792,6 +911,12 @@ class VisaAppointmentChecker:
     # Maximum backoff (minutes) applied when the Scheduling Limit Warning page is hit repeatedly
     SCHEDULING_LIMIT_MAX_BACKOFF_MINUTES: int = 120
     EXCLUSION_WINDOW_LIMIT: int = 9
+    API_HTTP_POOL_SIZE: int = 24
+    API_HTTP_RETRY_ATTEMPTS: int = 3
+    API_HTTP_RETRY_JITTER_SECONDS: Tuple[float, float] = (0.15, 0.45)
+    WARNING_BREAKER_STREAK_THRESHOLD: int = 3
+    WARNING_BREAKER_COOLDOWN_MINUTES: int = 25
+    WARNING_SCREENSHOT_MIN_INTERVAL_SECONDS: int = 90
 
     # Selectors for the Continue acknowledgment button on the Scheduling Limit Warning page
     WARNING_CONTINUE_SELECTORS: List[Selector] = [
@@ -803,6 +928,27 @@ class VisaAppointmentChecker:
             "//a[contains(@class, 'button') and contains("
             "translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'continue')]",
         ),
+    ]
+
+    # Selectors for the "I understand" acknowledgment on the Scheduling Limit Warning page
+    WARNING_ACK_LABEL_SELECTORS: List[Selector] = [
+        (
+            By.XPATH,
+            "//label[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'i understand')]",
+        ),
+    ]
+
+    WARNING_ACK_CHECKBOX_SELECTORS: List[Selector] = [
+        (
+            By.XPATH,
+            "//label[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'i understand')]/preceding::input[@type='checkbox'][1]",
+        ),
+        (
+            By.XPATH,
+            "//label[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'i understand')]/following::input[@type='checkbox'][1]",
+        ),
+        (By.CSS_SELECTOR, "input[type='checkbox'][name*='understand']"),
+        (By.CSS_SELECTOR, "input[type='checkbox'][id*='understand']"),
     ]
 
     def __init__(
@@ -847,7 +993,12 @@ class VisaAppointmentChecker:
         self._prime_time_windows: List[Tuple[int, int]] = []
         self._excluded_date_windows: List[Tuple[datetime, datetime]] = []
         self._burst_mode_active = False
-        self._slot_ledger = SlotLedger()
+        self._slot_ledger = SlotLedger(
+            db_path=Path(cfg.slot_ledger_db_path),
+            async_writes=True,
+            batch_size=32,
+            flush_interval_seconds=1.0,
+        )
         self._rotation_accounts: List[Tuple[str, str]] = []
         self._rotation_index = 0
         self._vpn_manager: Optional[ProtonVpnManager] = None
@@ -859,6 +1010,12 @@ class VisaAppointmentChecker:
         self._schedule_id: Optional[str] = seeded_schedule_id or None
         self._api_session: Optional[Any] = None
         self._api_session_cookies_hash: Optional[int] = None
+        self._api_session_lock = threading.Lock()
+        self._last_api_throttle_log_at: Optional[datetime] = None
+        self._api_latency_ms_by_facility: Dict[str, float] = {}
+        self._facility_probe_stats: Dict[str, Dict[str, Any]] = {}
+        self._facility_throttle_until: Dict[str, datetime] = {}
+        self._last_ui_check_latency_ms: Optional[float] = None
 
         # Rate tracking (P2.5)
         self._request_timestamps: List[datetime] = []
@@ -879,11 +1036,32 @@ class VisaAppointmentChecker:
 
         # Scheduling limit warning tracking
         self._scheduling_limit_count = 0
+        self._last_warning_page_log_at: Optional[datetime] = None
+        self._warning_capture_in_progress = False
+        self._last_warning_artifact_signature: Optional[str] = None
+        self._last_warning_artifact_at: Optional[datetime] = None
+        self._last_warning_artifact_state: Optional[str] = None
+        self._last_warning_artifact_state_change_at: Optional[datetime] = None
+        self._warning_artifact_handler: Optional[WarningArtifactHandler] = None
         # Observability counters (Phase 5)
         self._warning_page_hits = 0
         self._continue_success_count = 0
         self._api_check_count = 0
         self._ui_check_count = 0
+        self._check_cycle_id = 0
+        self._warning_seen_this_cycle = False
+        self._warning_ack_attempt_cycle = 0
+        self._warning_ack_succeeded_cycle = 0
+        self._warning_ack_failed_cycle = 0
+        self._warning_ack_failed_message = ""
+        self._warning_gate_streak = 0
+        self._warning_circuit_breaker_until: Optional[datetime] = None
+        self._warning_breaker_last_trip_at: Optional[datetime] = None
+        self._ui_skipped_due_warning_breaker = False
+        self._last_real_slot_eval_at: Optional[datetime] = None
+        self._last_warning_identity_switch_at: Optional[datetime] = None
+
+        self._attach_warning_artifact_handler()
 
         apply_selector_overrides(self.__class__, selectors_path)
         
@@ -900,10 +1078,10 @@ class VisaAppointmentChecker:
         
         if cfg.heartbeat_path:
             heartbeat_path = Path(cfg.heartbeat_path).expanduser()
-            heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
-            self._heartbeat_path = heartbeat_path
         else:
-            self._heartbeat_path = None
+            heartbeat_path = Path("logs") / "runtime_heartbeat.json"
+        heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
+        self._heartbeat_path = heartbeat_path
 
     # ------------------------------------------------------------------
     # Driver lifecycle helpers
@@ -966,6 +1144,29 @@ class VisaAppointmentChecker:
             self.driver = None
             self._appointment_base_url = None
 
+    def shutdown(self) -> None:
+        """Release browser and logging hooks before process exit."""
+        self._detach_warning_artifact_handler()
+        self._slot_ledger.shutdown()
+        self.quit_driver()
+
+    def _attach_warning_artifact_handler(self) -> None:
+        if self._warning_artifact_handler is not None:
+            return
+        handler = WarningArtifactHandler(self)
+        logging.getLogger().addHandler(handler)
+        self._warning_artifact_handler = handler
+
+    def _detach_warning_artifact_handler(self) -> None:
+        handler = self._warning_artifact_handler
+        if handler is None:
+            return
+        try:
+            logging.getLogger().removeHandler(handler)
+        except Exception:  # noqa: BLE001
+            pass
+        self._warning_artifact_handler = None
+
     def _build_options(self) -> Options:
         return build_chrome_options(headless=self.headless)
 
@@ -989,9 +1190,21 @@ class VisaAppointmentChecker:
         return getattr(self, "_login_url", f"{self._portal_url()}/users/sign_in")
 
     def _reschedule_targets(self) -> List[str]:
-        targets = getattr(self, "_reschedule_urls", None)
-        if isinstance(targets, list) and targets:
+        targets: List[str] = []
+
+        direct_url = self._appointment_url_for_schedule()
+        if direct_url:
+            targets.append(direct_url)
+
+        configured = getattr(self, "_reschedule_urls", None)
+        if isinstance(configured, list) and configured:
+            for url in configured:
+                if url and url not in targets:
+                    targets.append(url)
+
+        if targets:
             return targets
+
         base = self._portal_url()
         return [f"{base}/schedule/", f"{base}/appointment", f"{base}/"]
 
@@ -1018,6 +1231,51 @@ class VisaAppointmentChecker:
                 self._schedule_id = sid
                 logging.info("Captured schedule_id: %s", sid)
             return sid
+        return self._schedule_id
+
+    def _appointment_url_for_schedule(self) -> Optional[str]:
+        """Build the direct appointment URL when schedule_id is known."""
+        sid = (self._schedule_id or "").strip()
+        if not sid or not sid.isdigit():
+            return None
+        return f"{self._portal_url()}/schedule/{sid}/appointment"
+
+    def _discover_schedule_id_from_page(self, driver: webdriver.Chrome) -> Optional[str]:
+        """Discover schedule_id from URL, links, forms, or page source."""
+        sid = self._extract_schedule_id(driver.current_url or "")
+        if sid:
+            return sid
+
+        candidate_attrs = [
+            (By.CSS_SELECTOR, "a[href*='/schedule/']", "href"),
+            (By.CSS_SELECTOR, "form[action*='/schedule/']", "action"),
+        ]
+        for by, selector, attr in candidate_attrs:
+            try:
+                elements = driver.find_elements(by, selector)
+            except WebDriverException:
+                elements = []
+            for element in elements:
+                try:
+                    raw = element.get_attribute(attr) or ""
+                except WebDriverException:
+                    raw = ""
+                sid = self._extract_schedule_id(raw)
+                if sid:
+                    return sid
+
+        try:
+            source = driver.page_source or ""
+        except WebDriverException:
+            source = ""
+        match = re.search(r"/schedule/(\d+)", source)
+        if match:
+            sid = match.group(1)
+            if self._schedule_id != sid:
+                self._schedule_id = sid
+                logging.info("Discovered schedule_id from page source: %s", sid)
+            return sid
+
         return self._schedule_id
 
     def _parse_excluded_windows(self) -> None:
@@ -1093,6 +1351,24 @@ class VisaAppointmentChecker:
         if self.cfg.account_rotation_enabled and len(self._rotation_accounts) > 1:
             logging.info("Account rotation enabled with %d accounts", len(self._rotation_accounts))
 
+    def _rotate_to_next_account(self, reason: str) -> bool:
+        if len(self._rotation_accounts) < 2:
+            return False
+
+        self._rotation_index = (self._rotation_index + 1) % len(self._rotation_accounts)
+        next_email, next_password = self._rotation_accounts[self._rotation_index]
+        self.cfg.email = next_email
+        self.cfg.password = next_password
+        self._api_session = None
+        self._api_session_cookies_hash = None
+        self.reset_driver()
+        logging.info(
+            "Rotated active AIS account to %s (%s)",
+            self.cfg._mask(next_email),
+            reason,
+        )
+        return True
+
     def _init_vpn_manager(self) -> None:
         provider = (self.cfg.vpn_provider or "").strip().lower()
         if provider == "protonvpn":
@@ -1121,15 +1397,71 @@ class VisaAppointmentChecker:
             return
         if check_count % max(1, self.cfg.rotation_interval_checks) != 0:
             return
+        self._rotate_to_next_account(reason="interval rotation")
 
-        self._rotation_index = (self._rotation_index + 1) % len(self._rotation_accounts)
-        next_email, next_password = self._rotation_accounts[self._rotation_index]
-        self.cfg.email = next_email
-        self.cfg.password = next_password
-        self._api_session = None
-        self._api_session_cookies_hash = None
-        self.reset_driver()
-        logging.info("Rotated active AIS account to %s", self.cfg._mask(next_email))
+    def _start_check_cycle(self) -> None:
+        self._check_cycle_id += 1
+        self._warning_seen_this_cycle = False
+        self._ui_skipped_due_warning_breaker = False
+        self._warning_ack_failed_message = ""
+
+    def _finalize_check_cycle(self) -> None:
+        if self._ui_skipped_due_warning_breaker:
+            return
+        if self._warning_seen_this_cycle:
+            self._warning_gate_streak += 1
+        else:
+            self._warning_gate_streak = 0
+
+    def _warning_breaker_remaining_seconds(self) -> int:
+        breaker_until = getattr(self, "_warning_circuit_breaker_until", None)
+        if breaker_until is None:
+            return 0
+        remaining = int((breaker_until - datetime.now()).total_seconds())
+        return max(0, remaining)
+
+    def _warning_breaker_active(self) -> bool:
+        return self._warning_breaker_remaining_seconds() > 0
+
+    def _apply_warning_identity_strategy(self, *, projected_streak: int) -> None:
+        now = datetime.now()
+        last_switch = getattr(self, "_last_warning_identity_switch_at", None)
+        if last_switch and (now - last_switch) < timedelta(minutes=10):
+            logging.info(
+                "Skipping warning-triggered identity switch (last switch %.1f minutes ago)",
+                (now - last_switch).total_seconds() / 60.0,
+            )
+            return
+
+        account_switched = False
+        if self.cfg.account_rotation_enabled:
+            account_switched = self._rotate_to_next_account(
+                reason=f"warning gate streak={projected_streak}"
+            )
+
+        if self.cfg.vpn_rotate_on_captcha:
+            self._handle_vpn_captcha()
+
+        if account_switched or self.cfg.vpn_rotate_on_captcha:
+            self._last_warning_identity_switch_at = now
+
+    def _trip_warning_breaker_if_needed(self, *, projected_streak: int) -> None:
+        if projected_streak < self.WARNING_BREAKER_STREAK_THRESHOLD:
+            return
+        if self._warning_breaker_active():
+            return
+
+        now = datetime.now()
+        self._warning_breaker_last_trip_at = now
+        self._warning_circuit_breaker_until = now + timedelta(
+            minutes=self.WARNING_BREAKER_COOLDOWN_MINUTES
+        )
+        self._apply_warning_identity_strategy(projected_streak=projected_streak)
+        logging.warning(
+            "Scheduling warning circuit breaker enabled: API-only mode for %d minutes (projected warning streak=%d)",
+            self.WARNING_BREAKER_COOLDOWN_MINUTES,
+            projected_streak,
+        )
 
     def _audio_alert(self, reason: str) -> None:
         if not self.cfg.audio_alerts_enabled:
@@ -1334,7 +1666,7 @@ class VisaAppointmentChecker:
                 continue
             hour_match = abs(ev_hour - current_hour) <= 1 or abs(ev_hour - current_hour) >= 23
             dow_match = ev_dow == current_dow
-            if hour_match or dow_match:
+            if hour_match and dow_match:
                 relevant_total += 1
                 if ev.get("event") in ("accessible", "earlier_date_found", "available_in_burst"):
                     relevant_success += 1
@@ -1400,14 +1732,14 @@ class VisaAppointmentChecker:
                 return fid
         return None
 
-    def _get_api_session(self):
+    def _get_api_session(self, *, force_refresh: bool = False):
         """Create/reuse a requests.Session with cookies from the Selenium driver."""
         try:
             import requests as _requests  # noqa: F811
         except ImportError:
             return None
 
-        driver = self.driver
+        driver = getattr(self, "driver", None)
         if driver is None:
             return None
 
@@ -1416,30 +1748,291 @@ class VisaAppointmentChecker:
         except WebDriverException:
             return None
 
-        cookie_hash = hash(tuple(sorted((c["name"], c["value"]) for c in cookies)))
-
-        if self._api_session is not None and self._api_session_cookies_hash == cookie_hash:
-            return self._api_session
-
-        session = _requests.Session()
-        session.headers.update({
-            "User-Agent": driver.execute_script("return navigator.userAgent"),
-            "Accept": "application/json, text/javascript, */*; q=0.01",
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer": driver.current_url,
-        })
+        normalized_cookie_pairs = []
         for cookie in cookies:
-            session.cookies.set(cookie["name"], cookie["value"], domain=cookie.get("domain", ""))
+            name = (cookie.get("name") or "").strip()
+            value = cookie.get("value")
+            if name and value is not None:
+                normalized_cookie_pairs.append((name, value))
 
-        self._api_session = session
-        self._api_session_cookies_hash = cookie_hash
-        return session
+        cookie_hash = hash(tuple(sorted(normalized_cookie_pairs)))
+        lock = getattr(self, "_api_session_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._api_session_lock = lock
 
-    def _api_check_dates(self, facility_id: str) -> Optional[List[str]]:
+        with lock:
+            if (
+                not force_refresh
+                and self._api_session is not None
+                and self._api_session_cookies_hash == cookie_hash
+            ):
+                return self._api_session
+
+            session = _requests.Session()
+            try:
+                from requests.adapters import HTTPAdapter
+                from urllib3.util.retry import Retry
+
+                adapter = HTTPAdapter(
+                    pool_connections=self.API_HTTP_POOL_SIZE,
+                    pool_maxsize=self.API_HTTP_POOL_SIZE,
+                    max_retries=Retry(
+                        total=self.API_HTTP_RETRY_ATTEMPTS,
+                        connect=self.API_HTTP_RETRY_ATTEMPTS,
+                        read=self.API_HTTP_RETRY_ATTEMPTS,
+                        status=self.API_HTTP_RETRY_ATTEMPTS,
+                        backoff_factor=0.2,
+                        status_forcelist=(429, 500, 502, 503, 504),
+                        allowed_methods=frozenset(["GET"]),
+                        raise_on_status=False,
+                    ),
+                    pool_block=True,
+                )
+                session.mount("http://", adapter)
+                session.mount("https://", adapter)
+            except Exception:  # noqa: BLE001
+                pass
+            session.headers.update({
+                "User-Agent": driver.execute_script("return navigator.userAgent"),
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": driver.current_url,
+            })
+            for cookie in cookies:
+                name = (cookie.get("name") or "").strip()
+                value = cookie.get("value")
+                if not name or value is None:
+                    logging.debug("Skipping malformed browser cookie payload: %r", cookie)
+                    continue
+
+                domain = (cookie.get("domain") or "").strip() or None
+                path = (cookie.get("path") or "/").strip() or "/"
+                try:
+                    session.cookies.set(name, value, domain=domain, path=path)
+                except Exception as exc:  # noqa: BLE001
+                    logging.debug("Skipping cookie %r due to parse/set error: %s", name, exc)
+                    continue
+
+            self._api_session = session
+            self._api_session_cookies_hash = cookie_hash
+            return session
+
+    def _api_get_with_retries(self, session, *, url: str, facility_id: str, endpoint: str):
+        """GET helper with bounded retries + jitter for transient transport issues."""
+        max_attempts = max(1, self.API_HTTP_RETRY_ATTEMPTS)
+        for attempt in range(1, max_attempts + 1):
+            if attempt > 1:
+                jitter = random.uniform(*self.API_HTTP_RETRY_JITTER_SECONDS)
+                time.sleep(jitter)
+
+            try:
+                self._record_api_request()
+                req_started = time.perf_counter()
+                response = session.get(url, timeout=10)
+                latency_ms = (time.perf_counter() - req_started) * 1000.0
+
+                status_code = int(getattr(response, "status_code", 0) or 0)
+                if status_code in (408, 500, 502, 503, 504) and attempt < max_attempts:
+                    logging.debug(
+                        "API %s/%s transient status %d (attempt %d/%d) — retrying",
+                        endpoint,
+                        facility_id,
+                        status_code,
+                        attempt,
+                        max_attempts,
+                    )
+                    continue
+
+                return response, latency_ms
+            except Exception as exc:  # noqa: BLE001
+                if attempt < max_attempts:
+                    logging.debug(
+                        "API %s/%s request error on attempt %d/%d: %s",
+                        endpoint,
+                        facility_id,
+                        attempt,
+                        max_attempts,
+                        exc,
+                    )
+                    continue
+                logging.debug("API %s/%s failed after retries: %s", endpoint, facility_id, exc)
+                return None, None
+
+        return None, None
+
+    def _record_facility_probe_result(self, facility_id: str, dates: Optional[List[str]]) -> None:
+        if not hasattr(self, "_facility_probe_stats"):
+            self._facility_probe_stats = {}
+
+        now = datetime.now()
+        stats = self._facility_probe_stats.setdefault(
+            facility_id,
+            {
+                "checks": 0,
+                "hits": 0,
+                "throttle_hits": 0,
+                "last_check_at": None,
+                "last_hit_at": None,
+            },
+        )
+        stats["checks"] = int(stats.get("checks", 0)) + 1
+        stats["last_check_at"] = now
+        if dates:
+            stats["hits"] = int(stats.get("hits", 0)) + 1
+            stats["last_hit_at"] = now
+
+    def _record_facility_throttle(self, facility_id: str) -> None:
+        if not hasattr(self, "_facility_probe_stats"):
+            self._facility_probe_stats = {}
+        if not hasattr(self, "_facility_throttle_until"):
+            self._facility_throttle_until = {}
+
+        now = datetime.now()
+        stats = self._facility_probe_stats.setdefault(
+            facility_id,
+            {
+                "checks": 0,
+                "hits": 0,
+                "throttle_hits": 0,
+                "last_check_at": None,
+                "last_hit_at": None,
+            },
+        )
+        throttle_hits = int(stats.get("throttle_hits", 0)) + 1
+        stats["throttle_hits"] = throttle_hits
+        cooldown_minutes = min(30, 4 + (throttle_hits * 2))
+        self._facility_throttle_until[facility_id] = now + timedelta(minutes=cooldown_minutes)
+
+    def _facility_priority_score(self, location_name: str, facility_id: str) -> float:
+        now = datetime.now()
+        try:
+            base_score = float(self._slot_ledger.location_score(location_name))
+        except Exception:  # noqa: BLE001
+            base_score = 0.0
+
+        stats = getattr(self, "_facility_probe_stats", {}).get(facility_id, {})
+        checks = int(stats.get("checks", 0) or 0)
+        hits = int(stats.get("hits", 0) or 0)
+        hit_rate = (hits / checks) if checks > 0 else 0.0
+        score = base_score + (hit_rate * 8.0)
+
+        last_hit_at = stats.get("last_hit_at")
+        if isinstance(last_hit_at, datetime):
+            minutes_since_hit = (now - last_hit_at).total_seconds() / 60.0
+            if minutes_since_hit <= 20:
+                score += 2.5
+            elif minutes_since_hit <= 90:
+                score += 1.0
+
+        throttle_until = getattr(self, "_facility_throttle_until", {}).get(facility_id)
+        if isinstance(throttle_until, datetime) and throttle_until > now:
+            remaining = (throttle_until - now).total_seconds() / 60.0
+            score -= min(8.0, 1.5 + remaining / 4.0)
+
+        return round(score, 4)
+
+    def _facility_priority_snapshot(self) -> List[Dict[str, Any]]:
+        now = datetime.now()
+        snapshot: List[Dict[str, Any]] = []
+        for location_name, facility_id in self.FACILITY_ID_MAP.items():
+            stats = getattr(self, "_facility_probe_stats", {}).get(facility_id, {})
+            checks = int(stats.get("checks", 0) or 0)
+            hits = int(stats.get("hits", 0) or 0)
+            hit_rate = round((hits / checks), 3) if checks > 0 else 0.0
+            throttle_until = getattr(self, "_facility_throttle_until", {}).get(facility_id)
+            throttle_remaining = 0
+            throttle_until_iso = None
+            if isinstance(throttle_until, datetime) and throttle_until > now:
+                throttle_remaining = max(0, int((throttle_until - now).total_seconds()))
+                throttle_until_iso = throttle_until.replace(tzinfo=timezone.utc).isoformat()
+
+            snapshot.append(
+                {
+                    "location": location_name,
+                    "facility_id": facility_id,
+                    "priority_score": self._facility_priority_score(location_name, facility_id),
+                    "checks": checks,
+                    "hits": hits,
+                    "hit_rate": hit_rate,
+                    "throttle_remaining_seconds": throttle_remaining,
+                    "throttle_until": throttle_until_iso,
+                }
+            )
+
+        snapshot.sort(key=lambda item: float(item.get("priority_score", 0.0)), reverse=True)
+        return snapshot
+
+    def _decode_json_response(self, response, *, context: str):
+        """Decode a JSON response and log compact diagnostics when it fails."""
+        try:
+            return response.json()
+        except ValueError as exc:
+            body_preview = ""
+            try:
+                body_preview = (response.text or "")[:200].replace("\n", " ").strip()
+            except Exception:  # noqa: BLE001
+                body_preview = ""
+            logging.warning(
+                "API %s returned invalid JSON (status %s): %s%s",
+                context,
+                getattr(response, "status_code", "?"),
+                exc,
+                f" | body={body_preview!r}" if body_preview else "",
+            )
+            return None
+
+    def _is_api_throttle_response(self, response) -> bool:
+        """Return True when API output indicates rate-limit or busy throttling."""
+        status_code = int(getattr(response, "status_code", 0) or 0)
+        if status_code in (403, 429):
+            return True
+
+        if status_code == 200:
+            try:
+                body = (response.text or "").lower()
+            except Exception:  # noqa: BLE001
+                body = ""
+            throttle_markers = (
+                "too many requests",
+                "rate limit",
+                "system is busy",
+                "please try again later",
+                "forbidden",
+            )
+            if any(marker in body for marker in throttle_markers):
+                return True
+
+        return False
+
+    def _handle_api_throttle_response(self, response, *, facility_id: str, endpoint: str) -> None:
+        """Apply adaptive backoff when AIS API responds with throttle signals."""
+        now = datetime.now()
+        last_log = self._last_api_throttle_log_at
+        should_log = last_log is None or (now - last_log).total_seconds() >= 30
+
+        status_code = int(getattr(response, "status_code", 0) or 0)
+        if should_log:
+            logging.warning(
+                "API throttle detected on %s endpoint (facility %s, status %s); applying adaptive backoff",
+                endpoint,
+                facility_id,
+                status_code,
+            )
+            self._last_api_throttle_log_at = now
+
+        self._record_facility_throttle(facility_id)
+        self._record_availability_event("busy")
+        self._schedule_backoff()
+
+    def _api_check_dates(self, facility_id: str, *, session=None) -> Optional[List[str]]:
         """Check available dates via the JSON API (no browser interaction).
 
         Returns list of date strings (YYYY-MM-DD) or None on failure.
         """
+        if not hasattr(self, "_api_latency_ms_by_facility"):
+            self._api_latency_ms_by_facility = {}
+
         if not self._schedule_id:
             return None
 
@@ -1447,8 +2040,8 @@ class VisaAppointmentChecker:
             logging.debug("API rate-throttled, skipping")
             return None
 
-        session = self._get_api_session()
-        if session is None:
+        api_session = session or self._get_api_session()
+        if api_session is None:
             return None
 
         url = (
@@ -1458,29 +2051,66 @@ class VisaAppointmentChecker:
         )
 
         def _extract_dates(response):
+            if self._is_api_throttle_response(response):
+                self._handle_api_throttle_response(
+                    response,
+                    facility_id=facility_id,
+                    endpoint="days",
+                )
+                return []
+
             if response.status_code == 200:
-                data = response.json()
+                data = self._decode_json_response(response, context=f"days/{facility_id}")
+                if data is None:
+                    return None
                 if isinstance(data, list):
-                    dates = [entry["date"] for entry in data if "date" in entry]
+                    dates = [entry.get("date") for entry in data if isinstance(entry, dict) and entry.get("date")]
                     logging.info("API: %d dates available at facility %s", len(dates), facility_id)
                     return dates
+                logging.warning(
+                    "API days endpoint returned unexpected payload type %s for facility %s",
+                    type(data).__name__,
+                    facility_id,
+                )
             return None
 
         try:
-            self._record_api_request()
-            resp = session.get(url, timeout=10)
+            resp, latency_ms = self._api_get_with_retries(
+                api_session,
+                url=url,
+                facility_id=facility_id,
+                endpoint="days",
+            )
+            if resp is None:
+                return None
+
+            if latency_ms is not None:
+                self._api_latency_ms_by_facility[facility_id] = latency_ms
+
             dates = _extract_dates(resp)
             if dates is not None:
+                self._record_facility_probe_result(facility_id, dates)
                 return dates
+
             if resp.status_code == 401:
                 logging.debug("API returned 401 — refreshing session and retrying once")
-                self._api_session = None
-                retry_session = self._get_api_session()
+                retry_session = self._get_api_session(force_refresh=True)
                 if retry_session is not None:
-                    self._record_api_request()
-                    retry_resp = retry_session.get(url, timeout=10)
+                    retry_resp, retry_latency_ms = self._api_get_with_retries(
+                        retry_session,
+                        url=url,
+                        facility_id=facility_id,
+                        endpoint="days",
+                    )
+                    if retry_resp is None:
+                        return None
+
+                    if retry_latency_ms is not None:
+                        self._api_latency_ms_by_facility[facility_id] = retry_latency_ms
+
                     retry_dates = _extract_dates(retry_resp)
                     if retry_dates is not None:
+                        self._record_facility_probe_result(facility_id, retry_dates)
                         return retry_dates
                     logging.debug(
                         "API retry returned status %d for facility %s",
@@ -1494,13 +2124,13 @@ class VisaAppointmentChecker:
 
         return None
 
-    def _api_check_times(self, facility_id: str, date: str) -> Optional[List[str]]:
+    def _api_check_times(self, facility_id: str, date: str, *, session=None) -> Optional[List[str]]:
         """Fetch available times for a specific date via JSON API."""
         if not self._schedule_id:
             return None
 
-        session = self._get_api_session()
-        if session is None:
+        api_session = session or self._get_api_session()
+        if api_session is None:
             return None
 
         url = (
@@ -1510,24 +2140,56 @@ class VisaAppointmentChecker:
         )
 
         def _extract_times(response):
+            if self._is_api_throttle_response(response):
+                self._handle_api_throttle_response(
+                    response,
+                    facility_id=facility_id,
+                    endpoint="times",
+                )
+                return []
+
             if response.status_code == 200:
-                data = response.json()
-                return data.get("available_times", [])
+                data = self._decode_json_response(response, context=f"times/{facility_id}")
+                if data is None:
+                    return None
+
+                if isinstance(data, dict):
+                    times = data.get("available_times", [])
+                    return times if isinstance(times, list) else []
+                if isinstance(data, list):
+                    return [str(slot) for slot in data]
+
+                logging.warning(
+                    "API times endpoint returned unexpected payload type %s for facility %s",
+                    type(data).__name__,
+                    facility_id,
+                )
             return None
 
         try:
-            self._record_api_request()
-            resp = session.get(url, timeout=10)
+            resp, _ = self._api_get_with_retries(
+                api_session,
+                url=url,
+                facility_id=facility_id,
+                endpoint="times",
+            )
+            if resp is None:
+                return None
             times = _extract_times(resp)
             if times is not None:
                 return times
             if resp.status_code == 401:
                 logging.debug("API times returned 401 — refreshing session and retrying once")
-                self._api_session = None
-                retry_session = self._get_api_session()
+                retry_session = self._get_api_session(force_refresh=True)
                 if retry_session is not None:
-                    self._record_api_request()
-                    retry_resp = retry_session.get(url, timeout=10)
+                    retry_resp, _ = self._api_get_with_retries(
+                        retry_session,
+                        url=url,
+                        facility_id=facility_id,
+                        endpoint="times",
+                    )
+                    if retry_resp is None:
+                        return None
                     retry_times = _extract_times(retry_resp)
                     if retry_times is not None:
                         return retry_times
@@ -1548,9 +2210,11 @@ class VisaAppointmentChecker:
         if not self._schedule_id:
             return {}
 
+        shared_session = self._get_api_session()
+
         # Pre-compute scores to avoid repeated DB calls during sort.
         scores: Dict[str, float] = {
-            name: self._slot_ledger.location_score(name)
+            name: self._facility_priority_score(name, self.FACILITY_ID_MAP[name])
             for name in self.FACILITY_ID_MAP
         }
         # Sort facilities by location_score descending so high-yield locations
@@ -1564,10 +2228,10 @@ class VisaAppointmentChecker:
 
         def _check_one(name_id_pair):
             name, fid = name_id_pair
-            dates = self._api_check_dates(fid)
+            dates = self._api_check_dates(fid, session=shared_session)
             return name, dates
 
-        with ThreadPoolExecutor(max_workers=min(4, len(facilities_sorted))) as pool:
+        with ThreadPoolExecutor(max_workers=min(5, len(facilities_sorted))) as pool:
             futures = {pool.submit(_check_one, item): item for item in facilities_sorted}
             for future in as_completed(futures, timeout=30):
                 try:
@@ -1593,23 +2257,52 @@ class VisaAppointmentChecker:
             return
 
         best_by_location: Dict[str, datetime] = {}
+        api_check_id = int(getattr(self, "_api_check_count", 0) or 0)
+        backoff_until = getattr(self, "_backoff_until", None)
 
         for location, dates in results.items():
+            facility_id = self._resolve_facility_id(location) or ""
+            collector_latency = getattr(self, "_api_latency_ms_by_facility", {}).get(facility_id)
             for date_str in dates:
                 try:
                     parsed = datetime.strptime(date_str, "%Y-%m-%d")
                 except ValueError:
                     continue
 
-                self._slot_ledger.record_slot(date_str, location)
+                days_earlier = (current_date - parsed).days if parsed < current_date else 0
+                self._slot_ledger.record_slot(
+                    date_str,
+                    location,
+                    source="api",
+                    country_code=self.cfg.country_code,
+                    facility_id=facility_id,
+                    check_id=api_check_id,
+                    run_mode="test" if self.cfg.test_mode else "prod",
+                    collector_path="api",
+                    timezone_name=self.cfg.timezone,
+                    latency_ms=collector_latency,
+                    rate_limited=bool(backoff_until and datetime.now() < backoff_until),
+                    captcha_triggered=False,
+                    days_earlier=max(0, days_earlier),
+                    metadata={
+                        "current_appointment_date": self.cfg.current_appointment_date,
+                        "target_start_date": self.cfg.start_date,
+                        "target_end_date": self.cfg.end_date,
+                    },
+                )
 
                 if self._is_excluded_date(parsed):
                     logging.debug("Skipping excluded API date %s at %s", date_str, location)
                     continue
 
                 if start_date <= parsed <= end_date and parsed < current_date:
-                    days_earlier = (current_date - parsed).days
                     if days_earlier >= self.cfg.min_improvement_days:
+                        self._slot_ledger.record_valid_reschedule_date(
+                            date_str,
+                            location,
+                            source="api",
+                            days_earlier=days_earlier,
+                        )
                         if location not in best_by_location or parsed < best_by_location[location]:
                             best_by_location[location] = parsed
 
@@ -1798,6 +2491,9 @@ class VisaAppointmentChecker:
             return "no_driver"
             
         try:
+            if self._session_refresh_reason(self.driver):
+                return "login_required"
+
             url = self.driver.current_url.lower()
             page_source = self.driver.page_source.lower()
             
@@ -1833,6 +2529,7 @@ class VisaAppointmentChecker:
 
     def perform_check(self) -> None:
         start_time = datetime.now()
+        self._start_check_cycle()
         
         # --- API fast-path (P1.1): skip browser if we have schedule_id ---
         if self._schedule_id and self.driver is not None:
@@ -1841,9 +2538,20 @@ class VisaAppointmentChecker:
                 logging.info("✅ API fast-path found availability; browser interaction skipped")
                 # If auto-book is needed, fall through to browser flow below
                 if not self.cfg.auto_book:
+                    self._finalize_check_cycle()
                     return
             else:
                 logging.debug("API fast-path found nothing; falling back to browser")
+
+        if self._warning_breaker_active():
+            remaining = self._warning_breaker_remaining_seconds()
+            self._ui_skipped_due_warning_breaker = True
+            logging.warning(
+                "Scheduling warning breaker active — skipping UI navigation this cycle (%ds remaining)",
+                remaining,
+            )
+            self._finalize_check_cycle()
+            return
 
         # Respect UI navigation budgets before launching a browser cycle
         if self._should_throttle_ui():
@@ -1859,6 +2567,7 @@ class VisaAppointmentChecker:
                 self.cfg.max_ui_navigations_per_hour,
                 cooldown,
             )
+            self._finalize_check_cycle()
             raise UiRateLimitError(
                 f"UI navigation budget reached ({self.cfg.max_ui_navigations_per_hour}/hr); "
                 f"cooling down for {cooldown} seconds"
@@ -1870,6 +2579,9 @@ class VisaAppointmentChecker:
         driver = self.ensure_driver()
         
         try:
+            # Recover quickly when AIS expires an existing session between checks.
+            self._refresh_session_if_needed(driver, context="check start")
+
             # Smart navigation based on current page state
             page_state = self._get_page_state()
             logging.debug("Current page state: %s", page_state)
@@ -1928,6 +2640,7 @@ class VisaAppointmentChecker:
             self.reset_driver()
             raise
         finally:
+            self._finalize_check_cycle()
             # Track performance metrics
             duration = (datetime.now() - start_time).total_seconds()
             self._track_performance('check_duration', duration)
@@ -1943,12 +2656,16 @@ class VisaAppointmentChecker:
         # Only validate every 5 minutes to avoid overhead
         time_since_validation = datetime.now() - self._last_session_validation
         if time_since_validation < timedelta(minutes=5):
+            reason = self._session_refresh_reason(driver)
+            if reason:
+                logging.info("Cached session invalidated (%s); full login required", reason)
+                return False
             return True
             
         try:
             # Try accessing a known authenticated endpoint
             driver.get(f"{self._portal_url()}/groups")
-            is_valid = "sign_in" not in driver.current_url.lower()
+            is_valid = not self._session_refresh_reason(driver)
             if is_valid:
                 self._last_session_validation = datetime.now()
                 logging.info("Existing session validated successfully")
@@ -2000,22 +2717,55 @@ class VisaAppointmentChecker:
 
     def _navigate_to_schedule(self, driver: webdriver.Chrome) -> None:
         self._handle_group_continue()
+        self._discover_schedule_id_from_page(driver)
 
         schedule_found = False
+
+        # Prefer deterministic direct navigation when schedule_id is known.
+        direct_appointment_url = self._appointment_url_for_schedule()
+        if direct_appointment_url:
+            try:
+                logging.info("Navigating directly to appointment page: %s", direct_appointment_url)
+                self._safe_get(direct_appointment_url)
+                self._dismiss_overlays()
+                self._refresh_session_if_needed(
+                    driver,
+                    context="direct appointment navigation",
+                    return_url=direct_appointment_url,
+                )
+                if self._ensure_on_appointment_form(max_wait=8):
+                    logging.info("Reached appointment form directly via schedule_id")
+                    schedule_found = True
+            except TimeoutException:
+                logging.warning("Timeout loading direct appointment URL; falling back to discovery path")
+            except WebDriverException as exc:
+                logging.warning("Navigation error for direct appointment URL: %s", exc)
+
         for url in self._reschedule_targets():
+            if schedule_found:
+                break
             try:
                 logging.info("Navigating to scheduling page candidate: %s", url)
                 self._safe_get(url)
                 self._dismiss_overlays()
-                if "sign_in" in driver.current_url.lower():
-                    logging.info("Session expired while navigating; re-authenticating")
-                    self._complete_login(driver)
-                    continue
+                self._refresh_session_if_needed(
+                    driver,
+                    context="schedule navigation",
+                    return_url=url,
+                )
                 self._handle_group_continue()
+                self._discover_schedule_id_from_page(driver)
                 current = driver.current_url.lower()
                 if any(token in current for token in ("schedule", "appointment")):
                     logging.info("Reached scheduling page: %s", driver.current_url)
                     self._open_reschedule_flow()
+
+                    if self._is_scheduling_limit_warning_page(driver):
+                        logging.info(
+                            "Scheduling Limit Warning still active after navigation; skipping selector probes for this cycle"
+                        )
+                        return
+
                     schedule_found = True
                     break
             except TimeoutException:
@@ -2062,7 +2812,6 @@ class VisaAppointmentChecker:
                     title = ""
                     source = ""
                 if "scheduling limit warning" in title or "scheduling limit warning" in source:
-                    self._scheduling_limit_count += 1
                     self._handle_scheduling_limit_warning(driver)
 
     def _handle_group_continue(self) -> None:
@@ -2109,6 +2858,12 @@ class VisaAppointmentChecker:
 
     def _open_reschedule_flow(self) -> None:
         driver = self.ensure_driver()
+
+        if self._is_scheduling_limit_warning_page(driver):
+            self._log_scheduling_limit_warning(driver, context="reschedule flow start")
+            self._handle_scheduling_limit_warning(driver)
+            return
+
         current = driver.current_url.lower()
         
         # Check if we're already on the appointment form by looking for key elements
@@ -2121,6 +2876,10 @@ class VisaAppointmentChecker:
             logging.info("On appointment URL, waiting for form elements to load...")
             time.sleep(2)
             self._wait_for_page_ready(driver)
+            if self._is_scheduling_limit_warning_page(driver):
+                self._log_scheduling_limit_warning(driver, context="appointment URL landing")
+                self._handle_scheduling_limit_warning(driver)
+                return
             if self._ensure_on_appointment_form():
                 return
 
@@ -2150,6 +2909,10 @@ class VisaAppointmentChecker:
                 time.sleep(5)
                 self._wait_for_page_ready(driver)
                 self._dismiss_overlays()
+            if self._is_scheduling_limit_warning_page(driver):
+                self._log_scheduling_limit_warning(driver, context="direct appointment load")
+                self._handle_scheduling_limit_warning(driver)
+                return
             if self._ensure_on_appointment_form():
                 return
 
@@ -2221,19 +2984,9 @@ class VisaAppointmentChecker:
             logging.debug("URL doesn't contain appointment/schedule: %s", driver.current_url)
             return False
 
-        # Detect Scheduling Limit Warning page — this is NOT a valid appointment form.
-        # AIS shows this page when too many scheduling attempts have been made; it requires
-        # human CAPTCHA intervention to proceed and cannot be automated past.
-        try:
-            title = (driver.title or "").lower()
-            if "scheduling limit warning" in title:
-                logging.warning(
-                    "Scheduling Limit Warning page detected at %s — not a valid appointment form",
-                    driver.current_url,
-                )
-                return False
-        except Exception:  # noqa: BLE001
-            pass
+        if self._is_scheduling_limit_warning_page(driver):
+            self._log_scheduling_limit_warning(driver, context="appointment-form check")
+            return False
         
         start_time = datetime.now()
         
@@ -2406,8 +3159,22 @@ class VisaAppointmentChecker:
     def _check_consulate_availability(self) -> None:
         driver = self.ensure_driver()
         check_start = datetime.now()
+        self._last_ui_check_latency_ms = None
         
         logging.debug("Starting consulate availability check at %s", driver.current_url)
+
+        if self._refresh_session_if_needed(
+            driver,
+            context="availability check",
+            return_url=self._appointment_url_for_schedule(),
+        ):
+            if not self._ensure_on_appointment_form(max_wait=8):
+                self._open_reschedule_flow()
+
+        if self._is_scheduling_limit_warning_page(driver):
+            self._log_scheduling_limit_warning(driver, context="availability check")
+            self._handle_scheduling_limit_warning(driver)
+            return
 
         try:
             WebDriverWait(driver, 20).until(
@@ -2444,7 +3211,6 @@ class VisaAppointmentChecker:
                 "too many requests",
             )
             if any(marker in title or marker in source for marker in scheduling_limit_markers):
-                self._scheduling_limit_count += 1
                 self._handle_scheduling_limit_warning(driver)
             return
 
@@ -2527,6 +3293,9 @@ class VisaAppointmentChecker:
         if current_value:
             logging.info("Current appointment date pre-filled on form: %s", current_value)
 
+        # We reached the real date widget, so this cycle performed an actual slot evaluation.
+        self._last_real_slot_eval_at = datetime.now(timezone.utc)
+
         # Try multiple methods to open the calendar
         calendar_opened = False
         try:
@@ -2582,6 +3351,7 @@ class VisaAppointmentChecker:
         # Track navigation performance
         nav_time = (datetime.now() - check_start).total_seconds()
         self._track_performance('availability_check', nav_time)
+        self._last_ui_check_latency_ms = nav_time * 1000.0
 
     def _collect_available_dates(self, max_months: int = 3) -> List[str]:
         available: List[str] = []
@@ -2637,6 +3407,9 @@ class VisaAppointmentChecker:
 
         earlier_dates = []
         dates_in_range = []
+        ui_check_id = int(getattr(self, "_ui_check_count", 0) or 0)
+        ui_latency_ms = getattr(self, "_last_ui_check_latency_ms", None)
+        backoff_until = getattr(self, "_backoff_until", None)
         
         for slot in available_slots:
             # Parse the slot format "Month Year Day" (e.g., "January 2025 15")
@@ -2646,7 +3419,28 @@ class VisaAppointmentChecker:
 
             # Record every discovered slot in the ledger
             slot_key = parsed_date.strftime("%Y-%m-%d")
-            self._slot_ledger.record_slot(slot_key, self.cfg.location)
+            days_earlier = (current_date - parsed_date).days if parsed_date < current_date else 0
+            self._slot_ledger.record_slot(
+                slot_key,
+                self.cfg.location,
+                source="ui",
+                country_code=self.cfg.country_code,
+                facility_id=self._resolve_facility_id(self.cfg.location) or "",
+                check_id=ui_check_id,
+                run_mode="test" if self.cfg.test_mode else "prod",
+                collector_path="ui",
+                timezone_name=self.cfg.timezone,
+                latency_ms=ui_latency_ms,
+                rate_limited=bool(backoff_until and datetime.now() < backoff_until),
+                captcha_triggered=False,
+                days_earlier=max(0, days_earlier),
+                metadata={
+                    "calendar_slot_label": slot,
+                    "current_appointment_date": self.cfg.current_appointment_date,
+                    "target_start_date": self.cfg.start_date,
+                    "target_end_date": self.cfg.end_date,
+                },
+            )
 
             if self._is_excluded_date(parsed_date):
                 logging.debug("Skipping excluded slot date %s", parsed_date.strftime("%Y-%m-%d"))
@@ -2658,6 +3452,13 @@ class VisaAppointmentChecker:
                 
                 # Check if date is earlier than current appointment
                 if parsed_date < current_date:
+                    if days_earlier >= self.cfg.min_improvement_days:
+                        self._slot_ledger.record_valid_reschedule_date(
+                            slot_key,
+                            self.cfg.location,
+                            source="ui",
+                            days_earlier=days_earlier,
+                        )
                     earlier_dates.append(parsed_date)
 
         if earlier_dates:
@@ -2966,8 +3767,129 @@ class VisaAppointmentChecker:
             lambda d: d.execute_script("return document.readyState") == "complete"
         )
 
+    def _session_expired_text_visible(self, driver: webdriver.Chrome) -> bool:
+        markers = self.SESSION_EXPIRED_TEXT_MARKERS
+
+        try:
+            selector_groups = self.SESSION_EXPIRED_TEXT_SELECTORS + self.ALERT_SELECTORS
+            for by, value in selector_groups:
+                for element in driver.find_elements(by, value):
+                    try:
+                        if not element.is_displayed():
+                            continue
+                        text = (element.text or "").strip().lower()
+                    except (StaleElementReferenceException, WebDriverException):
+                        continue
+                    if text and any(marker in text for marker in markers):
+                        return True
+        except WebDriverException:
+            pass
+
+        try:
+            source = (driver.page_source or "").lower()
+        except WebDriverException:
+            source = ""
+
+        return any(marker in source for marker in markers)
+
+    def _session_refresh_reason(self, driver: Optional[webdriver.Chrome] = None) -> str:
+        drv = driver or self.ensure_driver()
+
+        try:
+            url = (drv.current_url or "").lower()
+        except WebDriverException:
+            url = ""
+
+        if "sign_in" in url:
+            return "sign_in_redirect"
+
+        if self._session_expired_text_visible(drv):
+            return "session_expired_modal"
+
+        return ""
+
+    def _acknowledge_session_expired_modal(self, driver: Optional[webdriver.Chrome] = None) -> bool:
+        drv = driver or self.ensure_driver()
+        if not self._session_expired_text_visible(drv):
+            return False
+
+        for by, value in self.SESSION_EXPIRED_ACK_SELECTORS:
+            try:
+                elements = drv.find_elements(by, value)
+            except WebDriverException:
+                continue
+
+            for element in elements:
+                try:
+                    if not element.is_displayed():
+                        continue
+                except (StaleElementReferenceException, WebDriverException):
+                    continue
+
+                try:
+                    self._scroll_into_view(element)
+                    element.click()
+                except (WebDriverException, ElementClickInterceptedException, ElementNotInteractableException, StaleElementReferenceException):
+                    try:
+                        drv.execute_script("arguments[0].click();", element)
+                    except (WebDriverException, StaleElementReferenceException):
+                        continue
+
+                logging.info("Acknowledged session-expired modal")
+                time.sleep(0.4)
+                return True
+
+        return False
+
+    def _refresh_session_if_needed(
+        self,
+        driver: Optional[webdriver.Chrome] = None,
+        *,
+        context: str = "",
+        return_url: Optional[str] = None,
+    ) -> bool:
+        drv = driver or self.ensure_driver()
+        reason = self._session_refresh_reason(drv)
+        if not reason:
+            return False
+
+        context_suffix = f" during {context}" if context else ""
+        reason_text = "session-expired modal" if reason == "session_expired_modal" else "sign-in redirect"
+        logging.warning("Authentication refresh required (%s)%s", reason_text, context_suffix)
+
+        if reason == "session_expired_modal":
+            self._acknowledge_session_expired_modal(drv)
+
+        # Reset API session cache whenever auth rotates.
+        self._api_session = None
+        self._api_session_cookies_hash = None
+
+        login_url = self._login_target()
+        self._safe_get(login_url, detect_captcha=True)
+        self._dismiss_overlays()
+
+        try:
+            current_url = (drv.current_url or "").lower()
+        except WebDriverException:
+            current_url = ""
+
+        if "sign_in" in current_url:
+            self._complete_login(drv)
+
+        self._last_session_validation = datetime.now()
+
+        if return_url:
+            self._safe_get(return_url)
+            self._dismiss_overlays()
+
+        return True
+
     def _dismiss_overlays(self) -> None:
         driver = self.ensure_driver()
+
+        # Session-expired modals block all interactions until acknowledged.
+        self._acknowledge_session_expired_modal(driver)
+
         for by, value in self.COOKIE_SELECTORS:
             elements = driver.find_elements(by, value)
             for element in elements:
@@ -3501,11 +4423,115 @@ class VisaAppointmentChecker:
 
         return False
 
-    def _try_warning_continue(self, driver: webdriver.Chrome) -> bool:
-        """Attempt to click the Continue acknowledgment button on the Scheduling Limit Warning page.
+    def _acknowledge_warning_checkbox(self, driver: webdriver.Chrome) -> bool:
+        """Best-effort tick of the warning-page 'I understand' checkbox.
 
-        Returns True if the button was found and clicked successfully.
+        Returns True when we likely toggled/confirmed the checkbox; False when
+        the checkbox is not present or could not be interacted with.
         """
+        for selector_by, selector_val in self.WARNING_ACK_LABEL_SELECTORS:
+            try:
+                label = self._find_element_raw([(selector_by, selector_val)], wait_time=2, clickable=True)
+                if label is None:
+                    continue
+                self._scroll_into_view(label)
+                try:
+                    label.click()
+                except WebDriverException:
+                    driver.execute_script("arguments[0].click();", label)
+                logging.info("Scheduling Limit Warning: checked acknowledgment via label click")
+                time.sleep(0.2)
+                return True
+            except (
+                TimeoutException,
+                NoSuchElementException,
+                ElementClickInterceptedException,
+                ElementNotInteractableException,
+                StaleElementReferenceException,
+                WebDriverException,
+            ) as exc:
+                logging.debug(
+                    "WARNING_ACK_LABEL selector (%s, %r) not usable: %s",
+                    selector_by,
+                    selector_val,
+                    exc,
+                )
+
+        for selector_by, selector_val in self.WARNING_ACK_CHECKBOX_SELECTORS:
+            try:
+                checkbox = self._find_element_raw([(selector_by, selector_val)], wait_time=2, clickable=False)
+                if checkbox is None:
+                    continue
+                try:
+                    if checkbox.is_selected():
+                        logging.debug("Scheduling Limit Warning: acknowledgment checkbox already selected")
+                        return True
+                except WebDriverException:
+                    pass
+
+                self._scroll_into_view(checkbox)
+                try:
+                    checkbox.click()
+                except WebDriverException:
+                    driver.execute_script(
+                        "arguments[0].checked = true;"
+                        "arguments[0].setAttribute('checked', 'checked');"
+                        "arguments[0].dispatchEvent(new Event('change', {bubbles:true}));"
+                        "arguments[0].dispatchEvent(new Event('click', {bubbles:true}));",
+                        checkbox,
+                    )
+                logging.info("Scheduling Limit Warning: checked acknowledgment checkbox")
+                time.sleep(0.2)
+                return True
+            except (
+                TimeoutException,
+                NoSuchElementException,
+                ElementClickInterceptedException,
+                ElementNotInteractableException,
+                StaleElementReferenceException,
+                WebDriverException,
+            ) as exc:
+                logging.debug(
+                    "WARNING_ACK_CHECKBOX selector (%s, %r) not usable: %s",
+                    selector_by,
+                    selector_val,
+                    exc,
+                )
+
+            try:
+                hidden_candidates = driver.find_elements(selector_by, selector_val)
+            except WebDriverException:
+                continue
+
+            for checkbox in hidden_candidates:
+                try:
+                    driver.execute_script(
+                        "arguments[0].checked = true;"
+                        "arguments[0].setAttribute('checked', 'checked');"
+                        "arguments[0].dispatchEvent(new Event('change', {bubbles:true}));"
+                        "arguments[0].dispatchEvent(new Event('click', {bubbles:true}));",
+                        checkbox,
+                    )
+                    logging.info(
+                        "Scheduling Limit Warning: checked hidden acknowledgment checkbox via script"
+                    )
+                    time.sleep(0.2)
+                    return True
+                except WebDriverException:
+                    continue
+
+        logging.debug(
+            "Scheduling Limit Warning: acknowledgment checkbox not found; attempting Continue directly"
+        )
+        return False
+
+    def _try_warning_continue(self, driver: webdriver.Chrome) -> bool:
+        """Attempt to acknowledge and continue through Scheduling Limit Warning.
+
+        Returns True if the Continue button was found and clicked successfully.
+        """
+        self._acknowledge_warning_checkbox(driver)
+
         for selector_by, selector_val in self.WARNING_CONTINUE_SELECTORS:
             try:
                 el = WebDriverWait(driver, 5).until(
@@ -3538,9 +4564,29 @@ class VisaAppointmentChecker:
         CaptchaDetectedError to require human intervention.
         """
         self._warning_page_hits += 1
+        cycle_id = int(getattr(self, "_check_cycle_id", 0) or 0)
+        if cycle_id <= 0:
+            cycle_id = self._warning_page_hits
+        warning_already_seen = bool(getattr(self, "_warning_seen_this_cycle", False))
+        if not warning_already_seen:
+            self._warning_seen_this_cycle = True
+        projected_streak = self._warning_gate_streak + (0 if warning_already_seen else 1)
+
+        if self._warning_ack_attempt_cycle == cycle_id:
+            logging.info(
+                "Scheduling Limit Warning: acknowledgment already attempted in cycle %d; skipping duplicate click",
+                cycle_id,
+            )
+            self._trip_warning_breaker_if_needed(projected_streak=projected_streak)
+            if self._warning_ack_failed_cycle == cycle_id:
+                raise CaptchaDetectedError(self._warning_ack_failed_message)
+            return
+
+        self._warning_ack_attempt_cycle = cycle_id
 
         # --- Phase 1: try the official Continue acknowledgment path first ---
         if self._try_warning_continue(driver):
+            self._warning_ack_succeeded_cycle = cycle_id
             self._continue_success_count += 1
             logging.info(
                 "Scheduling Limit Warning acknowledged via Continue (hit #%d, "
@@ -3548,6 +4594,7 @@ class VisaAppointmentChecker:
                 self._warning_page_hits,
                 self._continue_success_count,
             )
+            self._trip_warning_breaker_if_needed(projected_streak=projected_streak)
             return  # Do NOT raise; let the caller proceed normally.
 
         # Continue was not available — escalate with backoff.
@@ -3586,10 +4633,13 @@ class VisaAppointmentChecker:
                 ),
             )
 
-        raise CaptchaDetectedError(
+        self._trip_warning_breaker_if_needed(projected_streak=projected_streak)
+        self._warning_ack_failed_cycle = cycle_id
+        self._warning_ack_failed_message = (
             f"Scheduling limit warning (#{consecutive}) — human CAPTCHA required; "
             f"retry in {backoff_minutes} minutes"
         )
+        raise CaptchaDetectedError(self._warning_ack_failed_message)
 
     def _schedule_backoff(self) -> None:
         # Use adaptive frequency if available, otherwise fall back to configured frequency
@@ -3663,6 +4713,59 @@ class VisaAppointmentChecker:
         except Exception as exc:  # noqa: BLE001
             logging.debug("Failed to capture screenshot artifact: %s", exc)
 
+    def _capture_warning_artifact_for_record(self, record: logging.LogRecord) -> None:
+        """Persist a PNG screenshot for warning/error logs when a browser session exists."""
+        driver = self.driver
+        if driver is None:
+            return
+
+        # Avoid recursive warning-capture loops.
+        if self._warning_capture_in_progress:
+            return
+
+        now = datetime.now(timezone.utc)
+        signature = f"{record.name}:{record.getMessage()}"
+        message_text = record.getMessage().lower()
+        if "scheduling limit" in message_text:
+            state_key = "scheduling-limit"
+        elif "captcha" in message_text:
+            state_key = "captcha"
+        elif "network" in message_text or "timeout" in message_text:
+            state_key = "network"
+        else:
+            state_key = signature
+
+        last_state = getattr(self, "_last_warning_artifact_state", None)
+        last_capture_at = getattr(self, "_last_warning_artifact_at", None)
+        state_changed = last_state != state_key
+        within_window = (
+            isinstance(last_capture_at, datetime)
+            and (now - last_capture_at).total_seconds() < self.WARNING_SCREENSHOT_MIN_INTERVAL_SECONDS
+        )
+        if not state_changed and within_window:
+            return
+
+        self._warning_capture_in_progress = True
+        self._last_warning_artifact_signature = signature
+        self._last_warning_artifact_at = now
+        if state_changed:
+            self._last_warning_artifact_state = state_key
+            self._last_warning_artifact_state_change_at = now
+
+        msg = message_text
+        safe_msg = re.sub(r"[^a-z0-9]+", "_", msg).strip("_") or "warning"
+        safe_msg = safe_msg[:70]
+        timestamp = now.strftime("%Y%m%d-%H%M%S-%f")
+        screenshot_path = ARTIFACTS_DIR / f"{timestamp}_warning_{safe_msg}.png"
+
+        try:
+            driver.save_screenshot(str(screenshot_path))
+            logging.info("📸 Saved WARNING screenshot: %s", screenshot_path)
+        except Exception as exc:  # noqa: BLE001
+            logging.debug("Failed to capture warning screenshot: %s", exc)
+        finally:
+            self._warning_capture_in_progress = False
+
     def _capture_debug_state(self, label: str) -> None:
         """Capture comprehensive debug information about current page state.
         
@@ -3689,19 +4792,26 @@ class VisaAppointmentChecker:
         except Exception as exc:
             logging.warning("Failed to get basic page info: %s", exc)
 
+        warning_page = self._is_scheduling_limit_warning_page(driver)
+        if warning_page:
+            logging.info(
+                "⚠️ Page classified as Scheduling Limit Warning; missing appointment widgets are expected"
+            )
+
         # Check for key elements
         element_checks = [
             ("Location Selector", self.LOCATION_SELECTORS),
             ("Date Input", self.CONSULATE_DATE_INPUT_SELECTORS),
             ("Busy Message", self.CONSULATE_BUSY_SELECTORS),
-            ("Appointment Form", self.APPOINTMENT_FORM_SELECTORS),
+            ("Appointment Widgets", self.APPOINTMENT_WIDGET_SELECTORS),
             ("Reschedule Button", self.RESCHEDULE_BUTTON_SELECTORS),
-            ("Sign In Button", self.SIGN_IN_SELECTORS),
+            ("Sign In Button", self.SIGN_IN_FORM_ONLY_SELECTORS),
+            ("Warning Continue", self.WARNING_CONTINUE_SELECTORS),
         ]
         
         logging.info("🔎 Element Visibility Check:")
         for name, selectors in element_checks:
-            found = self._find_element(selectors, wait_time=2)
+            found = self._is_selector_visible(selectors)
             status = "✅ FOUND" if found else "❌ NOT FOUND"
             if found:
                 try:
@@ -3719,6 +4829,7 @@ class VisaAppointmentChecker:
         try:
             page_source = driver.page_source.lower()
             indicators = [
+                ("Scheduling Limit Warning", "scheduling limit warning" in page_source),
                 ("Login Form", "user[email]" in page_source or "sign_in" in page_source),
                 ("Appointment Form", "consulate_appointment" in page_source),
                 ("Calendar Busy", "not_available" in page_source or "no appointments" in page_source.lower()),
@@ -3747,12 +4858,85 @@ class VisaAppointmentChecker:
         
         logging.info("=" * 60)
 
+    def _is_scheduling_limit_warning_page(self, driver: Optional[webdriver.Chrome] = None) -> bool:
+        """Return True when the current page is AIS Scheduling Limit Warning."""
+        drv = driver or self.ensure_driver()
+        try:
+            title = (drv.title or "").lower()
+        except Exception:  # noqa: BLE001
+            title = ""
+
+        if "scheduling limit warning" in title:
+            return True
+
+        try:
+            source = (drv.page_source or "").lower()
+        except Exception:  # noqa: BLE001
+            source = ""
+
+        markers = (
+            "scheduling limit warning",
+            "you have reached the maximum number of times",
+            "please click continue to proceed",
+            "maximum number of 3 cancellations/reschedules",
+            "you have 3 remaining attempt",
+        )
+        return any(marker in source for marker in markers)
+
+    def _log_scheduling_limit_warning(self, driver: webdriver.Chrome, *, context: str = "") -> None:
+        """Log Scheduling Limit Warning detection with light spam suppression."""
+        now = datetime.now()
+        last = getattr(self, "_last_warning_page_log_at", None)
+        if last and (now - last) < timedelta(seconds=10):
+            return
+        self._last_warning_page_log_at = now
+
+        where = f" during {context}" if context else ""
+        logging.warning(
+            "Scheduling Limit Warning page detected%s at %s — not a valid appointment form",
+            where,
+            driver.current_url,
+        )
+
+    def _iso_or_none(self, dt_value: Optional[datetime]) -> Optional[str]:
+        if not isinstance(dt_value, datetime):
+            return None
+        if dt_value.tzinfo is None:
+            return dt_value.replace(tzinfo=timezone.utc).isoformat()
+        return dt_value.astimezone(timezone.utc).isoformat()
+
+    def _gate_status_snapshot(self) -> Dict[str, Any]:
+        api_total = int(getattr(self, "_api_check_count", 0) or 0)
+        ui_total = int(getattr(self, "_ui_check_count", 0) or 0)
+        total = api_total + ui_total
+
+        breaker_until = getattr(self, "_warning_circuit_breaker_until", None)
+        breaker_remaining = self._warning_breaker_remaining_seconds()
+        breaker_active = breaker_remaining > 0
+
+        return {
+            "warning_gate_streak": int(getattr(self, "_warning_gate_streak", 0) or 0),
+            "warning_seen_this_cycle": bool(getattr(self, "_warning_seen_this_cycle", False)),
+            "breaker_active": breaker_active,
+            "breaker_remaining_seconds": breaker_remaining,
+            "breaker_until": self._iso_or_none(breaker_until),
+            "breaker_last_trip_at": self._iso_or_none(getattr(self, "_warning_breaker_last_trip_at", None)),
+            "ui_skipped_due_breaker": bool(getattr(self, "_ui_skipped_due_warning_breaker", False)),
+            "last_real_slot_eval_at": self._iso_or_none(getattr(self, "_last_real_slot_eval_at", None)),
+            "api_checks": api_total,
+            "ui_checks": ui_total,
+            "api_vs_ui_ratio": round(api_total / total, 3) if total > 0 else None,
+            "warning_page_hits": int(getattr(self, "_warning_page_hits", 0) or 0),
+            "continue_success_count": int(getattr(self, "_continue_success_count", 0) or 0),
+        }
+
     def _update_heartbeat(self, status: str) -> None:
         if not self._heartbeat_path:
             return
 
         api_total = self._api_check_count
         ui_total = self._ui_check_count
+        gate_status = self._gate_status_snapshot()
         payload = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "status": status,
@@ -3770,6 +4954,8 @@ class VisaAppointmentChecker:
                 if (api_total + ui_total) > 0
                 else None
             ),
+            "gate_status": gate_status,
+            "facility_priority": self._facility_priority_snapshot(),
         }
 
         try:
@@ -3854,6 +5040,17 @@ class VisaAppointmentChecker:
                     except Exception:
                         pass
                 logging.debug("Cleaned up %d old artifact files", len(old_files))
+
+            warning_png_files = list(ARTIFACTS_DIR.glob("*_warning_*.png"))
+            if len(warning_png_files) > 200:
+                warning_png_files.sort(key=lambda x: x.stat().st_ctime)
+                stale_warning_pngs = warning_png_files[: len(warning_png_files) - 150]
+                for file_path in stale_warning_pngs:
+                    try:
+                        file_path.unlink()
+                    except Exception:
+                        pass
+                logging.debug("Cleaned up %d old warning screenshots", len(stale_warning_pngs))
         except Exception as exc:
             logging.debug("Artifact cleanup failed: %s", exc)
 
@@ -3920,6 +5117,93 @@ class VisaAppointmentChecker:
                 self._last_notification_time = now
 
 
+def _probe_writable_directory(path: Path, *, label: str) -> Tuple[bool, str]:
+    """Best-effort writable probe for directories used at runtime."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        fd, probe_path = tempfile.mkstemp(prefix="write-probe-", dir=str(path))
+        os.close(fd)
+        Path(probe_path).unlink(missing_ok=True)
+        return True, f"{label} writable: {path}"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{label} is not writable ({path}): {exc}"
+
+
+def run_startup_preflight(cfg: CheckerConfig) -> Tuple[bool, List[str]]:
+    """Validate writable runtime paths before browser startup."""
+    messages: List[str] = []
+    ok = True
+
+    log_ok, log_msg = _probe_writable_directory(LOG_PATH.parent, label="Log directory")
+    art_ok, art_msg = _probe_writable_directory(ARTIFACTS_DIR, label="Artifacts directory")
+    messages.extend([log_msg, art_msg])
+    ok = ok and log_ok and art_ok
+
+    try:
+        ledger_path, fallback_message = initialize_slot_ledger_path(Path(cfg.slot_ledger_db_path))
+        cfg.slot_ledger_db_path = str(ledger_path)
+        messages.append(f"Ledger DB writable: {ledger_path}")
+        if fallback_message:
+            messages.append(fallback_message)
+    except Exception as exc:  # noqa: BLE001
+        ok = False
+        messages.append(f"Ledger DB preflight failed: {exc}")
+
+    return ok, messages
+
+
+def run_self_check(cfg: CheckerConfig, *, selectors_file: str) -> bool:
+    """Run non-invasive health checks without authentication or appointment actions."""
+    print("\n🩺 Running self-check (no login attempts)...")
+    print("=" * 55)
+    success = True
+
+    try:
+        cfg.ensure_runtime_credentials_ready()
+        print("✅ Config credentials readiness check passed")
+    except ValueError as exc:
+        print(f"❌ Config credentials readiness check failed: {exc}")
+        success = False
+
+    preflight_ok, preflight_messages = run_startup_preflight(cfg)
+    for message in preflight_messages:
+        prefix = "✅" if "not writable" not in message.lower() and "failed" not in message.lower() else "⚠️"
+        print(f"{prefix} {message}")
+    if not preflight_ok:
+        success = False
+
+    try:
+        apply_selector_overrides(VisaAppointmentChecker, selectors_file)
+        print(f"✅ Selector registry validated: {selectors_file}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"❌ Selector registry validation failed ({selectors_file}): {exc}")
+        success = False
+
+    try:
+        resolved_driver_path: Optional[str] = None
+        try:
+            resolved_driver_path = ChromeDriverManager().install()
+            print(f"✅ WebDriver manager resolved driver: {resolved_driver_path}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"⚠️ WebDriver manager resolution failed, trying Selenium Manager fallback: {exc}")
+
+        options = build_chrome_options(headless=True)
+        options.add_argument("--disable-gpu")
+        if resolved_driver_path and Path(resolved_driver_path).exists():
+            driver = webdriver.Chrome(service=Service(resolved_driver_path), options=options)
+        else:
+            driver = webdriver.Chrome(options=options)
+        driver.quit()
+        print("✅ WebDriver launch/quit readiness passed")
+    except Exception as exc:  # noqa: BLE001
+        print(f"❌ WebDriver readiness failed: {exc}")
+        success = False
+
+    print("=" * 55)
+    print("✅ Self-check passed" if success else "❌ Self-check failed")
+    return success
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="US Visa Appointment Checker",
@@ -3974,6 +5258,21 @@ def main() -> None:
         action="store_true",
         help="Run exactly one check cycle and exit (scheduler/task-friendly mode).",
     )
+    parser.add_argument(
+        "--test-mode",
+        action="store_true",
+        help="Force dedicated test mode for this run (no probing/booking actions).",
+    )
+    parser.add_argument(
+        "--allow-test-notifications",
+        action="store_true",
+        help="Allow outbound notifications while running in test mode.",
+    )
+    parser.add_argument(
+        "--self-check",
+        action="store_true",
+        help="Run config/selector/webdriver/path health checks and exit (no login attempts).",
+    )
     parser.set_defaults(headless=True)
     args = parser.parse_args()
     configure_logging(debug=args.debug, json_logs=args.json_logs)
@@ -3989,6 +5288,32 @@ def main() -> None:
         logging.error("Configuration error: %s", exc)
         logging.error("Run 'python visa_appointment_checker.py --setup' to create config.ini")
         raise SystemExit(1) from exc
+
+    if args.test_mode:
+        cfg.test_mode = True
+    if args.allow_test_notifications:
+        cfg.test_mode_send_notifications = True
+
+    if args.self_check:
+        ok = run_self_check(cfg, selectors_file=args.selectors_file)
+        raise SystemExit(0 if ok else 1)
+
+    try:
+        cfg.ensure_runtime_credentials_ready()
+    except ValueError as exc:
+        logging.error("Configuration credentials are not ready: %s", exc)
+        logging.error("Run 'python visa_appointment_checker.py --setup' or edit config.ini placeholders.")
+        raise SystemExit(1) from exc
+
+    preflight_ok, preflight_messages = run_startup_preflight(cfg)
+    for message in preflight_messages:
+        if "not writable" in message.lower() or "failed" in message.lower():
+            logging.warning(message)
+        else:
+            logging.info(message)
+    if not preflight_ok:
+        logging.error("Startup preflight failed. Resolve path permission issues and retry.")
+        raise SystemExit(1)
 
     frequency = max(1, args.frequency if args.frequency is not None else cfg.check_frequency_minutes)
     headless = args.headless
@@ -4025,6 +5350,10 @@ def main() -> None:
     if cfg.auto_book:
         print(f"   Dry-run: {'Yes' if cfg.auto_book_dry_run else 'No'} | Preferred time: {cfg.preferred_time}")
     print(f"🧪 Test mode: {'Enabled' if cfg.test_mode else 'Disabled'}")
+    print(
+        f"📣 Test-mode notifications: "
+        f"{'Enabled' if cfg.test_mode_send_notifications else 'Suppressed'}"
+    )
     print(f"🛡️ Safety-first mode: {'Enabled' if cfg.safety_first_mode else 'Disabled'}")
     print(f"🔊 Audio alerts: {'Enabled' if cfg.audio_alerts_enabled else 'Disabled'}")
     print(f"⏰ Timezone: {cfg.timezone}")
@@ -4040,7 +5369,9 @@ def main() -> None:
     
     # Start progress reporter if interval > 0 and SMTP is configured
     reporter: Optional[ProgressReporter] = None
-    if report_interval > 0 and cfg.is_smtp_configured():
+    if report_interval > 0 and cfg.is_smtp_configured() and (
+        not cfg.test_mode or cfg.test_mode_send_notifications
+    ):
         reporter = ProgressReporter(cfg, interval_hours=report_interval)
         reporter.start()
 
@@ -4155,7 +5486,7 @@ def main() -> None:
     finally:
         if reporter:
             reporter.stop()
-        checker.quit_driver()
+        checker.shutdown()
         print("🧹 Browser session closed")
 
 

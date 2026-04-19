@@ -6,6 +6,7 @@ auto-book guardrails, and the slot ledger **without** launching a browser.
 
 import os
 import sys
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import ModuleType
@@ -91,7 +92,9 @@ def _make_config(**overrides):  # type: ignore[override]
         max_ui_navigations_per_hour=60,
         slot_ttl_hours=24,
         test_mode=False,
+        test_mode_send_notifications=False,
         excluded_date_ranges="",
+        slot_ledger_db_path="",
         safety_first_mode=False,
         safety_first_min_interval_minutes=10,
         audio_alerts_enabled=False,
@@ -290,6 +293,7 @@ class TestMinImprovementDays:
         checker._parse_calendar_date = lambda slot: datetime(2025, 11, 25)  # only 6 days earlier
         checker._evaluate_available_dates(["November 2025 25"])
         mock_notify.assert_not_called()
+        checker._slot_ledger.record_valid_reschedule_date.assert_not_called()
 
     @patch("visa_appointment_checker.send_notification")
     def test_notifies_big_improvement(self, mock_notify):
@@ -302,6 +306,12 @@ class TestMinImprovementDays:
         checker._parse_calendar_date = lambda slot: datetime(2025, 10, 1)  # 61 days earlier
         checker._evaluate_available_dates(["October 2025 1"])
         mock_notify.assert_called_once()
+        checker._slot_ledger.record_valid_reschedule_date.assert_called_once_with(
+            "2025-10-01",
+            "Ottawa",
+            source="ui",
+            days_earlier=61,
+        )
 
 
 # =========================================================================
@@ -697,6 +707,37 @@ class TestScheduleIdExtraction:
         result = checker._extract_schedule_id(url)
         assert result is None
 
+    def test_appointment_url_for_schedule(self):
+        checker = self._make_checker()
+        checker._schedule_id = "12345678"
+        url = checker._appointment_url_for_schedule()
+        assert url.endswith("/schedule/12345678/appointment")
+
+    def test_discover_schedule_id_from_page_links(self):
+        checker = self._make_checker()
+
+        mock_link = MagicMock()
+        mock_link.get_attribute.side_effect = (
+            lambda attr: "https://ais.usvisa-info.com/en-ca/niv/schedule/555777/appointment"
+            if attr == "href"
+            else ""
+        )
+
+        mock_driver = MagicMock()
+        mock_driver.current_url = "https://ais.usvisa-info.com/en-ca/niv/groups/123"
+        mock_driver.page_source = ""
+
+        def _find_elements(by, selector):
+            if selector == "a[href*='/schedule/']":
+                return [mock_link]
+            return []
+
+        mock_driver.find_elements.side_effect = _find_elements
+
+        result = checker._discover_schedule_id_from_page(mock_driver)
+        assert result == "555777"
+        assert checker._schedule_id == "555777"
+
 
 # =========================================================================
 # 13. Rate tracking / throttle
@@ -734,6 +775,81 @@ class TestRateTracking:
         checker = self._make_checker(max_rph=0)
         checker._request_timestamps = [datetime.now()] * 1000
         assert checker._should_throttle() is False
+
+
+class TestApiResilience:
+    """Verify API fast-path resilience against malformed cookies and payloads."""
+
+    def _make_checker(self):
+        from visa_appointment_checker import VisaAppointmentChecker
+
+        cfg = _make_config(max_requests_per_hour=120, max_api_requests_per_hour=120)
+        with patch.object(VisaAppointmentChecker, "__init__", lambda self, *a, **k: None):
+            checker = VisaAppointmentChecker.__new__(VisaAppointmentChecker)
+        checker.cfg = cfg
+        checker._schedule_id = "12345"
+        checker._request_timestamps = []
+        checker._api_check_count = 0
+        checker._api_session = None
+        checker._api_session_cookies_hash = None
+        checker._last_api_throttle_log_at = None
+        return checker
+
+    def test_get_api_session_skips_malformed_cookie_payloads(self):
+        checker = self._make_checker()
+
+        mock_driver = MagicMock()
+        mock_driver.get_cookies.return_value = [
+            {"name": "_yatri_session", "value": "abc123", "domain": "ais.usvisa-info.com"},
+            {"name": "", "value": "missing-name"},
+            {"value": "no-name-key"},
+        ]
+        mock_driver.execute_script.return_value = "Mozilla/5.0"
+        mock_driver.current_url = "https://ais.usvisa-info.com/en-ca/niv/schedule/12345/appointment"
+        checker.driver = mock_driver
+
+        session = checker._get_api_session()
+        assert session is not None
+        assert session.cookies.get("_yatri_session") == "abc123"
+        assert checker._api_session_cookies_hash is not None
+
+    def test_api_check_dates_handles_invalid_json_without_raise(self):
+        checker = self._make_checker()
+
+        response = MagicMock()
+        response.status_code = 200
+        response.json.side_effect = ValueError("malformed json")
+        response.text = "{invalid-json"
+
+        session = MagicMock()
+        session.get.return_value = response
+
+        checker._should_throttle = MagicMock(return_value=False)
+        checker._get_api_session = MagicMock(return_value=session)
+
+        result = checker._api_check_dates("94")
+        assert result is None
+
+    def test_api_check_dates_429_triggers_backoff_and_returns_empty(self):
+        checker = self._make_checker()
+
+        response = MagicMock()
+        response.status_code = 429
+        response.text = "Too Many Requests"
+
+        session = MagicMock()
+        session.get.return_value = response
+
+        checker._should_throttle = MagicMock(return_value=False)
+        checker._get_api_session = MagicMock(return_value=session)
+        checker._schedule_backoff = MagicMock()
+        checker._record_availability_event = MagicMock()
+
+        result = checker._api_check_dates("94")
+
+        assert result == []
+        checker._schedule_backoff.assert_called_once()
+        checker._record_availability_event.assert_called_with("busy")
 
 
 # =========================================================================
@@ -839,6 +955,21 @@ class TestSchedulingLimitWarning:
         checker._backoff_until = None
         checker._prime_time_windows = [(6, 9), (12, 14)]
         checker._availability_history = []
+        checker._check_cycle_id = 0
+        checker._warning_seen_this_cycle = False
+        checker._warning_ack_attempt_cycle = 0
+        checker._warning_ack_succeeded_cycle = 0
+        checker._warning_ack_failed_cycle = 0
+        checker._warning_ack_failed_message = ""
+        checker._warning_gate_streak = 0
+        checker._warning_circuit_breaker_until = None
+        checker._warning_breaker_last_trip_at = None
+        checker._ui_skipped_due_warning_breaker = False
+        checker._last_real_slot_eval_at = None
+        checker._last_warning_identity_switch_at = None
+        checker._rotation_accounts = []
+        checker._rotation_index = 0
+        checker._vpn_manager = None
         return checker
 
     def _make_mock_driver(self, title: str):
@@ -940,6 +1071,51 @@ class TestSchedulingLimitWarning:
             "_ensure_on_appointment_form should return False on Scheduling Limit Warning page"
         )
 
+    def test_is_scheduling_limit_warning_page_true_from_title(self):
+        checker = self._make_checker()
+        mock_driver = MagicMock()
+        mock_driver.title = "Scheduling Limit Warning | Official U.S. Department of State"
+        mock_driver.page_source = ""
+        checker.driver = mock_driver
+        checker.ensure_driver = MagicMock(return_value=mock_driver)
+
+        assert checker._is_scheduling_limit_warning_page(mock_driver) is True
+
+    def test_open_reschedule_flow_handles_warning_page_early(self):
+        checker = self._make_checker()
+        mock_driver = self._make_mock_driver("Scheduling Limit Warning | AIS")
+        mock_driver.page_source = ""
+        checker.driver = mock_driver
+        checker.ensure_driver = MagicMock(return_value=mock_driver)
+
+        with patch.object(checker, "_handle_scheduling_limit_warning", return_value=None) as mock_handle:
+            checker._open_reschedule_flow()
+
+        mock_handle.assert_called_once_with(mock_driver)
+
+    def test_warning_record_capture_saves_warning_png(self):
+        checker = self._make_checker()
+        mock_driver = self._make_mock_driver("Scheduling Limit Warning | AIS")
+        checker.driver = mock_driver
+        checker._warning_capture_in_progress = False
+        checker._last_warning_artifact_signature = None
+        checker._last_warning_artifact_at = None
+
+        record = logging.makeLogRecord(
+            {
+                "name": "visa_appointment_checker",
+                "levelno": logging.WARNING,
+                "levelname": "WARNING",
+                "msg": "Scheduling Limit Warning page detected during test",
+            }
+        )
+
+        checker._capture_warning_artifact_for_record(record)
+
+        mock_driver.save_screenshot.assert_called_once()
+        screenshot_path = mock_driver.save_screenshot.call_args[0][0]
+        assert "_warning_" in screenshot_path
+
     # ------------------------------------------------------------------
     # Phase 1: Continue acknowledgment path (new tests)
     # ------------------------------------------------------------------
@@ -966,6 +1142,32 @@ class TestSchedulingLimitWarning:
         with patch.object(checker, "_try_warning_continue", return_value=True):
             checker._handle_scheduling_limit_warning(mock_driver)
         assert checker._continue_success_count == 1
+
+    def test_warning_ack_only_attempted_once_per_cycle(self):
+        """Repeated warning handling in the same cycle should not click Continue twice."""
+        checker = self._make_checker()
+        checker._check_cycle_id = 42
+        mock_driver = self._make_mock_driver("Scheduling Limit Warning | AIS")
+
+        with patch.object(checker, "_try_warning_continue", return_value=True) as mock_continue:
+            checker._handle_scheduling_limit_warning(mock_driver)
+            checker._handle_scheduling_limit_warning(mock_driver)
+
+        assert mock_continue.call_count == 1
+        assert checker._warning_page_hits == 2
+
+    def test_warning_breaker_trips_after_streak_threshold(self):
+        """When projected warning streak reaches threshold, breaker should activate."""
+        checker = self._make_checker()
+        checker._check_cycle_id = 10
+        checker._warning_gate_streak = checker.WARNING_BREAKER_STREAK_THRESHOLD - 1
+        mock_driver = self._make_mock_driver("Scheduling Limit Warning | AIS")
+
+        with patch.object(checker, "_try_warning_continue", return_value=True):
+            checker._handle_scheduling_limit_warning(mock_driver)
+
+        assert checker._warning_circuit_breaker_until is not None
+        assert checker._warning_breaker_remaining_seconds() > 0
 
     def test_warning_page_hits_always_incremented(self):
         """_warning_page_hits must be incremented regardless of Continue outcome."""
@@ -1009,6 +1211,140 @@ class TestSchedulingLimitWarning:
         with patch.object(checker, "_try_warning_continue", return_value=True):
             checker._handle_scheduling_limit_warning(mock_driver)
         mock_notify.assert_not_called()
+
+    def test_acknowledge_warning_checkbox_uses_label_click_when_present(self):
+        checker = self._make_checker()
+        mock_driver = self._make_mock_driver("Scheduling Limit Warning | AIS")
+        checker.ensure_driver = MagicMock(return_value=mock_driver)
+        label = MagicMock()
+
+        with patch.object(checker, "_find_element_raw", return_value=label):
+            result = checker._acknowledge_warning_checkbox(mock_driver)
+
+        assert result is True
+        label.click.assert_called_once()
+
+    def test_try_warning_continue_attempts_ack_checkbox_before_continue(self):
+        checker = self._make_checker()
+        mock_driver = self._make_mock_driver("Scheduling Limit Warning | AIS")
+        continue_btn = MagicMock()
+
+        with patch.object(checker, "_acknowledge_warning_checkbox", return_value=True) as mock_ack:
+            with patch("visa_appointment_checker.WebDriverWait") as mock_wait:
+                mock_wait.return_value.until.return_value = continue_btn
+                result = checker._try_warning_continue(mock_driver)
+
+        assert result is True
+        mock_ack.assert_called_once_with(mock_driver)
+        continue_btn.click.assert_called_once()
+
+    def test_try_warning_continue_still_works_when_ack_checkbox_missing(self):
+        checker = self._make_checker()
+        mock_driver = self._make_mock_driver("Scheduling Limit Warning | AIS")
+        continue_btn = MagicMock()
+
+        with patch.object(checker, "_acknowledge_warning_checkbox", return_value=False) as mock_ack:
+            with patch("visa_appointment_checker.WebDriverWait") as mock_wait:
+                mock_wait.return_value.until.return_value = continue_btn
+                result = checker._try_warning_continue(mock_driver)
+
+        assert result is True
+        mock_ack.assert_called_once_with(mock_driver)
+        continue_btn.click.assert_called_once()
+
+
+class TestSessionExpiryRecovery:
+    """Verify modal-based session expiry triggers clean re-auth recovery."""
+
+    def _make_checker(self, **cfg_kw):
+        from visa_appointment_checker import VisaAppointmentChecker
+
+        cfg = _make_config(**cfg_kw)
+        with patch.object(VisaAppointmentChecker, "__init__", lambda self, *a, **k: None):
+            checker = VisaAppointmentChecker.__new__(VisaAppointmentChecker)
+        checker.cfg = cfg
+        checker._api_session = object()
+        checker._api_session_cookies_hash = 123
+        checker._last_session_validation = None
+        checker._portal_base = "https://ais.usvisa-info.com/en-ca/niv"
+        return checker
+
+    def test_session_expired_text_visible_from_modal_source(self):
+        checker = self._make_checker()
+
+        mock_driver = MagicMock()
+        mock_driver.current_url = "https://ais.usvisa-info.com/en-ca/niv/schedule/12345/appointment"
+        mock_driver.page_source = "<div>Your session has expired. Please log back in to continue.</div>"
+        mock_driver.find_elements.return_value = []
+
+        checker.driver = mock_driver
+        checker.ensure_driver = MagicMock(return_value=mock_driver)
+
+        assert checker._session_expired_text_visible(mock_driver) is True
+        assert checker._session_refresh_reason(mock_driver) == "session_expired_modal"
+
+    def test_refresh_session_if_needed_reauthenticates_and_returns(self):
+        checker = self._make_checker()
+
+        mock_driver = MagicMock()
+        mock_driver.current_url = "https://ais.usvisa-info.com/en-ca/niv/schedule/12345/appointment"
+        mock_driver.page_source = "Your session has expired. Please log back in to continue."
+        mock_driver.find_elements.return_value = []
+
+        checker.driver = mock_driver
+        checker.ensure_driver = MagicMock(return_value=mock_driver)
+
+        login_url = "https://ais.usvisa-info.com/en-ca/niv/users/sign_in"
+        target_url = "https://ais.usvisa-info.com/en-ca/niv/schedule/12345/appointment"
+        safe_get_calls = []
+
+        def _fake_safe_get(url, **kwargs):
+            safe_get_calls.append(url)
+            mock_driver.current_url = url
+            if "sign_in" in url:
+                mock_driver.page_source = "<form action='/users/sign_in'></form>"
+            else:
+                mock_driver.page_source = "<div id='appointment-form'></div>"
+
+        checker._safe_get = MagicMock(side_effect=_fake_safe_get)
+        checker._login_target = MagicMock(return_value=login_url)
+        checker._dismiss_overlays = MagicMock()
+        checker._complete_login = MagicMock(
+            side_effect=lambda drv: setattr(
+                mock_driver,
+                "current_url",
+                "https://ais.usvisa-info.com/en-ca/niv/groups/12345",
+            )
+        )
+        checker._acknowledge_session_expired_modal = MagicMock(return_value=True)
+
+        refreshed = checker._refresh_session_if_needed(
+            mock_driver,
+            context="unit-test",
+            return_url=target_url,
+        )
+
+        assert refreshed is True
+        assert safe_get_calls[0] == login_url
+        assert safe_get_calls[-1] == target_url
+        checker._complete_login.assert_called_once_with(mock_driver)
+        assert checker._api_session is None
+        assert checker._api_session_cookies_hash is None
+        assert checker._last_session_validation is not None
+
+    def test_validate_existing_session_cache_invalidated_by_modal(self):
+        checker = self._make_checker()
+        checker._last_session_validation = datetime.now()
+
+        mock_driver = MagicMock()
+        mock_driver.current_url = "https://ais.usvisa-info.com/en-ca/niv/schedule/12345/appointment"
+        mock_driver.page_source = "Your session has expired. Please log back in to continue."
+        mock_driver.find_elements.return_value = []
+
+        checker.driver = mock_driver
+        checker.ensure_driver = MagicMock(return_value=mock_driver)
+
+        assert checker._validate_existing_session(mock_driver) is False
 
 
 # =========================================================================
@@ -1109,7 +1445,7 @@ class TestLocationPriorityOrdering:
 
         checked_order = []
 
-        def _fake_api_check(fid):
+        def _fake_api_check(fid, **kwargs):
             # find location name by fid
             for name, f in checker.FACILITY_ID_MAP.items():
                 if f == fid:

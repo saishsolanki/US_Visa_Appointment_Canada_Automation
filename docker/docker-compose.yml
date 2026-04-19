@@ -28,6 +28,10 @@ services:
     environment:
       # Timezone for accurate log timestamps
       - TZ=${TZ:-America/Toronto}
+      # Runtime identity controls for mounted volume compatibility
+      - APP_USER=${APP_USER:-visabot}
+      - APP_GROUP=${APP_GROUP:-visabot}
+      - RUN_AS_ROOT=${RUN_AS_ROOT:-false}
       # User agent for browser
       - CHECKER_USER_AGENT=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36
       # Debug mode - set to true for verbose logging and debug captures

@@ -3,6 +3,12 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Test/coverage artifacts
+.coverage
+.coverage.*
+.pytest_cache/
+.pytest_tmp/
+
 # Virtual environment
 venv/
 visa_env/

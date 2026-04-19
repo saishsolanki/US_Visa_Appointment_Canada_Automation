@@ -2,6 +2,9 @@
 # Copy this file to config.ini and update with your information
 
 [DEFAULT]
+# Config schema version (auto-migrated by app startup)
+config_version = 2
+
 # Your AIS (US Visa) account credentials
 email = your_ais_email@example.com
 password = your_ais_password
@@ -103,6 +106,13 @@ slot_ttl_hours = 24
 
 # Dedicated safety test mode (verifies authenticated flow, no slot probing/booking)
 test_mode = False
+
+# In test mode, keep outbound notifications suppressed unless explicitly enabled.
+test_mode_send_notifications = False
+
+# Optional override for slot-ledger SQLite path.
+# Leave empty to use platform app-data default.
+slot_ledger_db_path =
 
 # Complex date exclusions: up to 9 ranges, separated by semicolons
 # Format: YYYY-MM-DD:YYYY-MM-DD;YYYY-MM-DD:YYYY-MM-DD

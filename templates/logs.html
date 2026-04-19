@@ -3,198 +3,2033 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Live Logs – US Visa Checker</title>
+    <title>Live Logs - US Visa Checker</title>
     <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
+        :root {
+            --bg-main: #0d1117;
+            --bg-panel: #161b22;
+            --bg-soft: #101720;
+            --line: #30363d;
+            --line-soft: #21262d;
+            --text: #c9d1d9;
+            --muted: #8b949e;
+            --accent: #58a6ff;
+            --ok: #3fb950;
+            --warn: #d29922;
+            --error: #f85149;
+            --chip-rate: #ffb84d;
+            --chip-captcha: #7ee787;
+            --chip-network: #79c0ff;
+            --chip-config: #d2a8ff;
+            --chip-other: #8b949e;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #0d1117;
-            color: #c9d1d9;
-            height: 100vh;
+            font-family: 'Segoe UI', 'Trebuchet MS', sans-serif;
+            background: radial-gradient(circle at 20% -20%, #1a2330, #0d1117 55%);
+            color: var(--text);
+            min-height: 100vh;
             display: flex;
             flex-direction: column;
         }
+
         header {
-            background: #161b22;
-            border-bottom: 1px solid #30363d;
+            background: var(--bg-panel);
+            border-bottom: 1px solid var(--line);
             padding: 0.75rem 1.25rem;
             display: flex;
             align-items: center;
-            gap: 1rem;
+            gap: 0.75rem;
             flex-wrap: wrap;
+            position: sticky;
+            top: 0;
+            z-index: 30;
         }
-        header h1 { font-size: 1.1rem; color: #58a6ff; flex: 1; }
+
+        header h1 {
+            font-size: 1.08rem;
+            color: var(--accent);
+            flex: 1;
+            letter-spacing: 0.02em;
+        }
+
         .status-dot {
-            width: 10px; height: 10px; border-radius: 50%;
-            background: #3fb950; display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--ok);
+            display: inline-block;
             animation: pulse 1.5s infinite;
         }
-        .status-dot.disconnected { background: #f85149; animation: none; }
+
+        .status-dot.disconnected {
+            background: var(--error);
+            animation: none;
+        }
+
         @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.4; }
+            0%,
+            100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.4;
+            }
         }
+
+        nav {
+            display: flex;
+            gap: 0.4rem;
+            flex-wrap: wrap;
+        }
+
         nav a {
-            color: #58a6ff;
+            color: var(--accent);
             text-decoration: none;
-            font-size: 0.9rem;
-            padding: 0.3rem 0.6rem;
+            font-size: 0.88rem;
+            padding: 0.3rem 0.62rem;
             border-radius: 5px;
-            border: 1px solid #30363d;
+            border: 1px solid var(--line);
+            background: rgba(13, 17, 23, 0.35);
         }
-        nav a:hover { background: #21262d; }
+
+        nav a:hover {
+            background: var(--line-soft);
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+
+        .insights-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(220px, 1fr));
+            gap: 0.7rem;
+            padding: 0.65rem 1.25rem;
+            border-bottom: 1px solid var(--line);
+            background: linear-gradient(180deg, rgba(16, 23, 32, 0.95), rgba(13, 17, 23, 0.8));
+        }
+
+        .insight-card {
+            background: rgba(22, 27, 34, 0.88);
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 0.55rem 0.65rem;
+            min-height: 74px;
+        }
+
+        .insight-title {
+            color: var(--muted);
+            font-size: 0.74rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin-bottom: 0.4rem;
+        }
+
+        #timeline-lane {
+            display: flex;
+            align-items: center;
+            gap: 0.42rem;
+            overflow-x: auto;
+            padding: 0.12rem 0 0.2rem;
+            min-height: 36px;
+            scrollbar-width: thin;
+        }
+
+        .timeline-empty {
+            color: var(--muted);
+            font-size: 0.77rem;
+        }
+
+        .timeline-event {
+            border: 1px solid var(--line);
+            background: #111922;
+            color: var(--text);
+            border-radius: 999px;
+            padding: 0.18rem 0.5rem;
+            font-size: 0.72rem;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .timeline-event.start {
+            border-color: #1f6feb;
+            color: #79c0ff;
+        }
+
+        .timeline-event.warning {
+            border-color: #b98918;
+            color: #f2cc60;
+        }
+
+        .timeline-event.complete {
+            border-color: #2ea043;
+            color: #7ee787;
+        }
+
+        .timeline-event.sleep {
+            border-color: #8250df;
+            color: #c297ff;
+        }
+
+        .timeline-event:hover {
+            background: #1a2633;
+        }
+
+        #cycle-summary {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.32rem 0.48rem;
+            font-size: 0.78rem;
+        }
+
+        #cycle-summary strong {
+            color: #9ecbff;
+            font-weight: 600;
+        }
+
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            padding: 0.15rem 0.5rem;
+            font-size: 0.72rem;
+            color: var(--muted);
+            background: #0f151d;
+        }
+
+        .status-pill.good {
+            color: #7ee787;
+            border-color: #2ea043;
+        }
+
+        .status-pill.warn {
+            color: #f2cc60;
+            border-color: #b98918;
+        }
+
+        .status-pill.bad {
+            color: #ff9797;
+            border-color: #f85149;
+        }
+
+        .sparkline-row {
+            display: grid;
+            grid-template-columns: 64px 1fr 46px;
+            align-items: center;
+            gap: 0.4rem;
+            margin-bottom: 0.28rem;
+            font-size: 0.74rem;
+            color: var(--muted);
+        }
+
+        .sparkline-row:last-child {
+            margin-bottom: 0;
+        }
+
+        .sparkline {
+            width: 100%;
+            height: 30px;
+            border-radius: 6px;
+            background: #0d131b;
+            border: 1px solid var(--line-soft);
+        }
+
+        .retention-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.3rem 0.45rem;
+            font-size: 0.76rem;
+        }
+
+        .retention-grid span {
+            color: var(--muted);
+        }
+
         .toolbar {
             display: flex;
             align-items: center;
-            gap: 0.75rem;
+            gap: 0.55rem;
             padding: 0.5rem 1.25rem;
-            background: #161b22;
-            border-bottom: 1px solid #30363d;
+            background: var(--bg-panel);
+            border-bottom: 1px solid var(--line);
             flex-wrap: wrap;
         }
-        .toolbar label { font-size: 0.85rem; color: #8b949e; }
-        .toolbar input[type=checkbox] { cursor: pointer; }
-        button.clear-btn {
+
+        .toolbar label {
+            font-size: 0.82rem;
+            color: var(--muted);
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+
+        .toolbar input[type=checkbox] {
+            cursor: pointer;
+        }
+
+        .toolbar-spacer {
             margin-left: auto;
+        }
+
+        button.action-btn,
+        a.action-btn {
             padding: 0.3rem 0.8rem;
             background: #21262d;
-            color: #c9d1d9;
-            border: 1px solid #30363d;
+            color: var(--text);
+            border: 1px solid var(--line);
             border-radius: 5px;
             cursor: pointer;
-            font-size: 0.85rem;
+            font-size: 0.78rem;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
         }
-        button.clear-btn:hover { background: #30363d; }
-        #log-container {
-            flex: 1;
-            overflow-y: auto;
-            padding: 0.75rem 1.25rem;
-            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+
+        button.action-btn:hover,
+        a.action-btn:hover {
+            background: #30363d;
+        }
+
+        button.action-btn.ghost {
+            background: transparent;
+        }
+
+        button.action-btn.primary {
+            border-color: #1f6feb;
+            color: #9ecbff;
+        }
+
+        .search-input,
+        .preset-select {
+            background: #0d1117;
+            color: var(--text);
+            border: 1px solid var(--line);
+            border-radius: 4px;
+            padding: 2px 6px;
             font-size: 0.82rem;
-            line-height: 1.6;
+        }
+
+        .search-input {
+            width: 180px;
+        }
+
+        .preset-select {
+            min-width: 162px;
+        }
+
+        #severity-chip-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.45rem;
+            padding: 0.45rem 1.25rem 0.55rem;
+            border-bottom: 1px solid var(--line);
+            background: var(--bg-soft);
+        }
+
+        .chip {
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            font-size: 0.74rem;
+            padding: 0.2rem 0.55rem;
+            cursor: pointer;
+            user-select: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.38rem;
+            color: var(--text);
+            background: #111922;
+        }
+
+        .chip.inactive {
+            opacity: 0.45;
+            background: #0f151d;
+            color: var(--muted);
+        }
+
+        .chip[data-severity='rate-limit'] {
+            border-color: rgba(255, 184, 77, 0.6);
+        }
+
+        .chip[data-severity='captcha'] {
+            border-color: rgba(126, 231, 135, 0.6);
+        }
+
+        .chip[data-severity='network'] {
+            border-color: rgba(121, 192, 255, 0.6);
+        }
+
+        .chip[data-severity='config'] {
+            border-color: rgba(210, 168, 255, 0.6);
+        }
+
+        #workspace {
+            flex: 1;
+            min-height: 0;
+            display: grid;
+            grid-template-columns: 1.8fr minmax(300px, 1fr);
+            gap: 0.7rem;
+            padding: 0.7rem 1.25rem 0.7rem;
+        }
+
+        #workspace.stack-mode {
+            grid-template-columns: 1fr;
+        }
+
+        #workspace.stack-mode #gallery-pane {
+            max-height: 320px;
+        }
+
+        #log-pane,
+        #gallery-pane {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: rgba(13, 17, 23, 0.9);
+            overflow: hidden;
+            min-height: 0;
+        }
+
+        .pane-header {
+            border-bottom: 1px solid var(--line);
+            background: var(--bg-panel);
+            padding: 0.42rem 0.6rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.8rem;
+            color: var(--muted);
+        }
+
+        #log-container {
+            height: calc(100% - 33px);
+            overflow-y: auto;
+            padding: 0.68rem 0.85rem;
+            font-family: Consolas, 'Liberation Mono', Menlo, monospace;
+            font-size: 0.8rem;
+            line-height: 1.58;
+            background: linear-gradient(180deg, #0e141d, #0d1117);
+        }
+
+        .log-line {
+            white-space: pre-wrap;
+            word-break: break-word;
+            padding: 0.11rem 0.32rem;
+            border-radius: 4px;
+            border: 1px solid transparent;
+            cursor: default;
+        }
+
+        .log-line.jump-target {
+            border-color: #1f6feb;
+            background: rgba(56, 139, 253, 0.12);
+        }
+
+        .log-line.ERROR {
+            color: var(--error);
+        }
+
+        .log-line.WARNING {
+            color: var(--warn);
+        }
+
+        .log-line.INFO {
+            color: var(--text);
+        }
+
+        .log-line.DEBUG {
+            color: var(--muted);
+        }
+
+        .log-line.CRITICAL {
+            color: var(--error);
+            font-weight: 700;
+        }
+
+        .log-line.found {
+            color: var(--ok);
+            font-weight: 700;
+        }
+
+        .severity-dot {
+            display: inline-block;
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            margin-right: 0.42rem;
+            vertical-align: middle;
+        }
+
+        .severity-dot.rate-limit {
+            background: var(--chip-rate);
+        }
+
+        .severity-dot.captcha {
+            background: var(--chip-captcha);
+        }
+
+        .severity-dot.network {
+            background: var(--chip-network);
+        }
+
+        .severity-dot.config {
+            background: var(--chip-config);
+        }
+
+        .severity-dot.other {
+            background: var(--chip-other);
+        }
+
+        #gallery-content {
+            display: grid;
+            grid-template-rows: auto minmax(120px, 1fr);
+            height: calc(100% - 33px);
+            min-height: 0;
+        }
+
+        #warnings-strip {
+            display: flex;
+            gap: 0.55rem;
+            overflow-x: auto;
+            padding: 0.56rem;
+            border-bottom: 1px solid var(--line-soft);
+            min-height: 146px;
+        }
+
+        .warning-card {
+            min-width: 182px;
+            max-width: 182px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: #121a24;
+            cursor: pointer;
+            overflow: hidden;
+            display: grid;
+            grid-template-rows: 100px auto;
+        }
+
+        .warning-card.active {
+            border-color: #1f6feb;
+            box-shadow: 0 0 0 1px rgba(88, 166, 255, 0.35) inset;
+        }
+
+        .warning-card img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
             background: #0d1117;
         }
-        .log-line { white-space: pre-wrap; word-break: break-all; }
-        .log-line.ERROR   { color: #f85149; }
-        .log-line.WARNING { color: #d29922; }
-        .log-line.INFO    { color: #c9d1d9; }
-        .log-line.DEBUG   { color: #8b949e; }
-        .log-line.CRITICAL { color: #f85149; font-weight: bold; }
-        .log-line.found   { color: #3fb950; font-weight: bold; }
+
+        .warning-meta {
+            padding: 0.4rem 0.48rem;
+            font-size: 0.69rem;
+            line-height: 1.32;
+            color: var(--muted);
+            display: grid;
+            gap: 0.16rem;
+        }
+
+        .warning-label {
+            color: var(--text);
+            font-size: 0.73rem;
+            line-height: 1.25;
+            max-height: 2.45em;
+            overflow: hidden;
+        }
+
+        .warning-tag {
+            display: inline-flex;
+            align-items: center;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            padding: 0.05rem 0.34rem;
+            font-size: 0.65rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            width: fit-content;
+        }
+
+        .warning-tag.rate-limit {
+            color: var(--chip-rate);
+            border-color: rgba(255, 184, 77, 0.5);
+        }
+
+        .warning-tag.captcha {
+            color: var(--chip-captcha);
+            border-color: rgba(126, 231, 135, 0.5);
+        }
+
+        .warning-tag.network {
+            color: var(--chip-network);
+            border-color: rgba(121, 192, 255, 0.5);
+        }
+
+        .warning-tag.config {
+            color: var(--chip-config);
+            border-color: rgba(210, 168, 255, 0.5);
+        }
+
+        .warning-empty {
+            font-size: 0.82rem;
+            color: var(--muted);
+            padding: 0.4rem;
+        }
+
+        #preview-box {
+            padding: 0.58rem;
+            overflow-y: auto;
+            display: grid;
+            gap: 0.45rem;
+        }
+
+        #preview-box.empty {
+            color: var(--muted);
+            font-size: 0.8rem;
+            align-content: center;
+            justify-items: center;
+            text-align: center;
+        }
+
+        #preview-image {
+            width: 100%;
+            max-height: 210px;
+            border-radius: 8px;
+            border: 1px solid var(--line);
+            object-fit: contain;
+            background: #060a10;
+        }
+
+        .preview-meta {
+            font-size: 0.78rem;
+            color: var(--muted);
+            display: grid;
+            gap: 0.2rem;
+        }
+
+        .preview-actions {
+            display: flex;
+            gap: 0.45rem;
+            flex-wrap: wrap;
+        }
+
         footer {
-            background: #161b22;
-            border-top: 1px solid #30363d;
+            background: var(--bg-panel);
+            border-top: 1px solid var(--line);
             padding: 0.4rem 1.25rem;
             font-size: 0.78rem;
-            color: #8b949e;
+            color: var(--muted);
             display: flex;
             align-items: center;
             gap: 0.75rem;
+            flex-wrap: wrap;
         }
-        #line-count { margin-left: auto; }
+
+        #line-count-footer {
+            margin-left: auto;
+        }
+
+        #mobile-control-bar {
+            position: sticky;
+            top: 57px;
+            z-index: 25;
+            display: flex;
+            align-items: center;
+            gap: 0.42rem;
+            padding: 0.45rem 1.25rem;
+            border-bottom: 1px solid var(--line);
+            background: linear-gradient(180deg, rgba(22, 27, 34, 0.98), rgba(14, 20, 29, 0.95));
+            flex-wrap: wrap;
+        }
+
+        #mobile-control-bar .status-pill {
+            font-size: 0.68rem;
+        }
+
+        #mobile-control-bar button {
+            padding: 0.22rem 0.58rem;
+            font-size: 0.72rem;
+            border-radius: 5px;
+            border: 1px solid var(--line);
+            background: #1c232e;
+            color: var(--text);
+            cursor: pointer;
+        }
+
+        #mobile-control-bar button:hover {
+            background: #2a3444;
+        }
+
+        #lightbox,
+        #palette-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(4, 8, 12, 0.78);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 80;
+            padding: 1rem;
+        }
+
+        #lightbox.open,
+        #palette-overlay.open {
+            display: flex;
+        }
+
+        .modal-card {
+            width: min(1020px, 96vw);
+            max-height: 92vh;
+            background: #0f1621;
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            overflow: hidden;
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+        }
+
+        .modal-header {
+            padding: 0.55rem 0.7rem;
+            border-bottom: 1px solid var(--line);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+            color: var(--muted);
+        }
+
+        .modal-body {
+            padding: 0.62rem;
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 0.5rem;
+            min-height: 0;
+        }
+
+        #lightbox-image {
+            width: 100%;
+            max-height: 68vh;
+            object-fit: contain;
+            background: #05080d;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+        }
+
+        .modal-footer {
+            border-top: 1px solid var(--line);
+            padding: 0.48rem 0.62rem;
+            display: flex;
+            gap: 0.45rem;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .palette-card {
+            width: min(640px, 96vw);
+            max-height: 88vh;
+            background: #0f1621;
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            overflow: hidden;
+            display: grid;
+            grid-template-rows: auto 1fr;
+        }
+
+        #palette-input {
+            width: 100%;
+            padding: 0.6rem 0.75rem;
+            background: #0d1117;
+            color: var(--text);
+            border: none;
+            border-bottom: 1px solid var(--line);
+            font-size: 0.9rem;
+            outline: none;
+        }
+
+        #palette-results {
+            overflow-y: auto;
+            max-height: 62vh;
+        }
+
+        .palette-item {
+            width: 100%;
+            border: 0;
+            border-bottom: 1px solid var(--line-soft);
+            background: transparent;
+            color: var(--text);
+            text-align: left;
+            padding: 0.56rem 0.72rem;
+            cursor: pointer;
+            font-size: 0.84rem;
+        }
+
+        .palette-item.active,
+        .palette-item:hover {
+            background: #1a2736;
+        }
+
+        @media (max-width: 1180px) {
+            .insights-grid {
+                grid-template-columns: repeat(2, minmax(220px, 1fr));
+            }
+
+            #workspace {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 760px) {
+            .search-input {
+                width: 130px;
+            }
+
+            .insights-grid {
+                grid-template-columns: 1fr;
+            }
+
+            #mobile-control-bar {
+                padding: 0.38rem 0.75rem;
+                top: 94px;
+            }
+
+            .toolbar,
+            #severity-chip-row,
+            #workspace,
+            footer,
+            .insights-grid {
+                padding-left: 0.75rem;
+                padding-right: 0.75rem;
+            }
+
+            #workspace.stack-mode #gallery-pane,
+            #gallery-pane {
+                max-height: 360px;
+            }
+        }
     </style>
 </head>
 <body>
 <header>
-    <span class="status-dot" id="status-dot" title="Connecting…"></span>
-    <h1>📋 Live Log Viewer</h1>
+    <span class="status-dot" id="status-dot" title="Connecting..."></span>
+    <h1>Live Log Viewer</h1>
     <nav>
-        <a href="/">⚙️ Config</a>
-        <a href="/analytics">📊 Analytics</a>
-        <a href="/update">🔄 Update</a>
+        <a href="/">Config</a>
+        <a href="/dashboard">Control</a>
+        <a href="/analytics">Analytics</a>
+        <a href="/update">Update</a>
     </nav>
+    <div class="header-actions">
+        <button class="action-btn ghost" id="open-palette-btn" type="button">Command Palette</button>
+    </div>
 </header>
+
+<div id="mobile-control-bar">
+    <span class="status-pill" id="service-pill">Service: unknown</span>
+    <span class="status-pill" id="auth-pill">Session: checking</span>
+    <button type="button" id="service-start-btn">Start</button>
+    <button type="button" id="service-stop-btn">Stop</button>
+    <button type="button" id="service-restart-btn">Restart</button>
+</div>
+
+<section class="insights-grid">
+    <article class="insight-card">
+        <div class="insight-title">Run Timeline</div>
+        <div id="timeline-lane"></div>
+    </article>
+
+    <article class="insight-card">
+        <div class="insight-title">Current Cycle</div>
+        <div id="cycle-summary">
+            <div>Check: <strong id="cycle-check-id">-</strong></div>
+            <div>Duration: <strong id="cycle-duration">-</strong></div>
+            <div>Warnings: <strong id="cycle-warning-count">0</strong></div>
+            <div>Status: <strong id="cycle-date-status">pending</strong></div>
+        </div>
+    </article>
+
+    <article class="insight-card">
+        <div class="insight-title">Warning Trend</div>
+        <div class="sparkline-row">
+            <span>24h</span>
+            <svg class="sparkline" id="spark-hourly" viewBox="0 0 220 30" preserveAspectRatio="none"></svg>
+            <span id="spark-hourly-total">0</span>
+        </div>
+        <div class="sparkline-row">
+            <span>7d</span>
+            <svg class="sparkline" id="spark-daily" viewBox="0 0 220 30" preserveAspectRatio="none"></svg>
+            <span id="spark-daily-total">0</span>
+        </div>
+    </article>
+
+    <article class="insight-card">
+        <div class="insight-title">Gallery Retention</div>
+        <div class="retention-grid">
+            <div><span>Count:</span> <strong id="retention-count">0</strong></div>
+            <div><span>Disk:</span> <strong id="retention-size">0 B</strong></div>
+            <div><span>Oldest:</span> <strong id="retention-oldest">-</strong></div>
+            <div><span>Newest:</span> <strong id="retention-newest">-</strong></div>
+        </div>
+    </article>
+</section>
+
 <div class="toolbar">
     <label><input type="checkbox" id="autoscroll" checked> Auto-scroll</label>
     <label><input type="checkbox" id="filter-debug"> Hide DEBUG</label>
+    <label><input type="checkbox" id="warning-only"> Warning only</label>
+    <label><input type="checkbox" id="split-mode" checked> Side-by-side mode</label>
+
     <label>
-        <input type="text" id="search-filter" placeholder="Filter…"
-            style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:2px 6px;font-size:0.82rem;width:160px;">
+        <input type="text" id="search-filter" class="search-input" placeholder="Filter logs and warnings...">
     </label>
-    <button class="clear-btn" id="clear-btn">🗑 Clear screen</button>
+
+    <select id="preset-select" class="preset-select"></select>
+    <button class="action-btn" id="apply-preset-btn" type="button">Apply Preset</button>
+    <button class="action-btn" id="save-preset-btn" type="button">Save Current</button>
+    <button class="action-btn" id="delete-preset-btn" type="button">Delete Preset</button>
+
+    <div class="toolbar-spacer"></div>
+    <button class="action-btn" id="refresh-warnings-btn" type="button">Refresh Warnings</button>
+    <button class="action-btn" id="clear-btn" type="button">Clear Screen</button>
 </div>
-<div id="log-container"></div>
+
+<div id="severity-chip-row"></div>
+
+<div id="workspace">
+    <section id="log-pane">
+        <div class="pane-header">
+            <span>Live Log Stream</span>
+            <span id="line-count">0 lines</span>
+        </div>
+        <div id="log-container"></div>
+    </section>
+
+    <aside id="gallery-pane">
+        <div class="pane-header">
+            <span>Warning Screenshots</span>
+            <span id="warnings-status">Loading...</span>
+        </div>
+        <div id="gallery-content">
+            <div id="warnings-strip"></div>
+            <div id="preview-box" class="empty">Select a screenshot to inspect details, then jump to related log lines.</div>
+        </div>
+    </aside>
+</div>
+
 <footer>
-    <span id="status-text">Connecting…</span>
-    <span id="line-count">0 lines</span>
+    <span id="status-text">Connecting...</span>
+    <span id="keyboard-hint">Ctrl+K command palette, arrows for lightbox navigation</span>
+    <span id="line-count-footer">0 lines</span>
 </footer>
+
+<div id="lightbox" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-label="Warning screenshot preview">
+        <div class="modal-header">
+            <span id="lightbox-title">Warning Screenshot</span>
+            <button class="action-btn ghost" id="lightbox-close-btn" type="button">Close</button>
+        </div>
+        <div class="modal-body">
+            <img id="lightbox-image" alt="Warning screenshot">
+            <div class="preview-meta" id="lightbox-meta"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="action-btn" id="lightbox-prev-btn" type="button">Prev</button>
+            <button class="action-btn" id="lightbox-next-btn" type="button">Next</button>
+            <button class="action-btn primary" id="lightbox-jump-log-btn" type="button">Jump To Matching Log</button>
+            <a class="action-btn" id="lightbox-open-tab" href="#" target="_blank" rel="noopener noreferrer">Open Raw</a>
+        </div>
+    </div>
+</div>
+
+<div id="palette-overlay" aria-hidden="true">
+    <div class="palette-card" role="dialog" aria-modal="true" aria-label="Command palette">
+        <input id="palette-input" type="text" placeholder="Type a command or page...">
+        <div id="palette-results"></div>
+    </div>
+</div>
 
 <script>
 (function () {
+    const severityOrder = ['rate-limit', 'captcha', 'network', 'config', 'other'];
+    const severityLabels = {
+        'rate-limit': 'Rate Limit',
+        'captcha': 'Captcha',
+        'network': 'Network',
+        'config': 'Config',
+        'other': 'Other'
+    };
+
+    const builtInPresets = {
+        default: {
+            name: 'Default',
+            hideDebug: false,
+            warningOnly: false,
+            sideBySide: true,
+            search: '',
+            severities: [...severityOrder]
+        },
+        captcha_only: {
+            name: 'Captcha Only',
+            hideDebug: true,
+            warningOnly: true,
+            sideBySide: true,
+            search: '',
+            severities: ['captcha']
+        },
+        network_only: {
+            name: 'Network Only',
+            hideDebug: true,
+            warningOnly: true,
+            sideBySide: true,
+            search: '',
+            severities: ['network']
+        },
+        warning_only: {
+            name: 'Warning Only',
+            hideDebug: false,
+            warningOnly: true,
+            sideBySide: true,
+            search: '',
+            severities: [...severityOrder]
+        }
+    };
+
     const container = document.getElementById('log-container');
-    const statusDot  = document.getElementById('status-dot');
+    const workspace = document.getElementById('workspace');
+    const statusDot = document.getElementById('status-dot');
     const statusText = document.getElementById('status-text');
-    const lineCount  = document.getElementById('line-count');
+    const lineCountTop = document.getElementById('line-count');
+    const lineCountFooter = document.getElementById('line-count-footer');
     const autoScroll = document.getElementById('autoscroll');
     const filterDebug = document.getElementById('filter-debug');
+    const warningOnly = document.getElementById('warning-only');
+    const splitMode = document.getElementById('split-mode');
     const searchFilter = document.getElementById('search-filter');
-    const clearBtn   = document.getElementById('clear-btn');
+    const clearBtn = document.getElementById('clear-btn');
+    const refreshWarningsBtn = document.getElementById('refresh-warnings-btn');
+    const warningsStrip = document.getElementById('warnings-strip');
+    const warningsStatus = document.getElementById('warnings-status');
+    const previewBox = document.getElementById('preview-box');
+    const severityChipRow = document.getElementById('severity-chip-row');
 
-    let count = 0;
+    const cycleCheckId = document.getElementById('cycle-check-id');
+    const cycleDuration = document.getElementById('cycle-duration');
+    const cycleWarningCount = document.getElementById('cycle-warning-count');
+    const cycleDateStatus = document.getElementById('cycle-date-status');
+    const timelineLane = document.getElementById('timeline-lane');
+
+    const sparkHourly = document.getElementById('spark-hourly');
+    const sparkDaily = document.getElementById('spark-daily');
+    const sparkHourlyTotal = document.getElementById('spark-hourly-total');
+    const sparkDailyTotal = document.getElementById('spark-daily-total');
+
+    const retentionCount = document.getElementById('retention-count');
+    const retentionSize = document.getElementById('retention-size');
+    const retentionOldest = document.getElementById('retention-oldest');
+    const retentionNewest = document.getElementById('retention-newest');
+
+    const presetSelect = document.getElementById('preset-select');
+    const applyPresetBtn = document.getElementById('apply-preset-btn');
+    const savePresetBtn = document.getElementById('save-preset-btn');
+    const deletePresetBtn = document.getElementById('delete-preset-btn');
+
+    const servicePill = document.getElementById('service-pill');
+    const authPill = document.getElementById('auth-pill');
+    const serviceStartBtn = document.getElementById('service-start-btn');
+    const serviceStopBtn = document.getElementById('service-stop-btn');
+    const serviceRestartBtn = document.getElementById('service-restart-btn');
+
+    const lightbox = document.getElementById('lightbox');
+    const lightboxTitle = document.getElementById('lightbox-title');
+    const lightboxImage = document.getElementById('lightbox-image');
+    const lightboxMeta = document.getElementById('lightbox-meta');
+    const lightboxCloseBtn = document.getElementById('lightbox-close-btn');
+    const lightboxPrevBtn = document.getElementById('lightbox-prev-btn');
+    const lightboxNextBtn = document.getElementById('lightbox-next-btn');
+    const lightboxJumpLogBtn = document.getElementById('lightbox-jump-log-btn');
+    const lightboxOpenTab = document.getElementById('lightbox-open-tab');
+
+    const openPaletteBtn = document.getElementById('open-palette-btn');
+    const paletteOverlay = document.getElementById('palette-overlay');
+    const paletteInput = document.getElementById('palette-input');
+    const paletteResults = document.getElementById('palette-results');
+
+    const state = {
+        count: 0,
+        logEntries: [],
+        warningItems: [],
+        warningFilters: new Set(severityOrder),
+        selectedWarningIndex: -1,
+        timelineEvents: [],
+        currentCycle: {
+            checkId: null,
+            startTs: 0,
+            warningCount: 0,
+            dateStatus: 'pending',
+            durationSeconds: null,
+            completedAt: 0,
+        },
+        customPresets: {},
+        paletteActions: [],
+        paletteFilteredActions: [],
+        paletteIndex: 0,
+        highlightedLineEl: null,
+    };
+
+    function parseTimestampMs(text) {
+        if (!text) return 0;
+        const match = text.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:,(\d{3}))?/);
+        if (!match) return 0;
+        const iso = `${match[1]}T${match[2]}${match[3] ? '.' + match[3] : ''}`;
+        const parsed = Date.parse(iso);
+        return Number.isNaN(parsed) ? 0 : parsed;
+    }
 
     function levelClass(text) {
         if (/\bCRITICAL\b/.test(text)) return 'CRITICAL';
-        if (/\bERROR\b/.test(text))    return 'ERROR';
-        if (/\bWARNING\b/.test(text))  return 'WARNING';
-        if (/\bDEBUG\b/.test(text))    return 'DEBUG';
-        if (/slot|found|available|booked/i.test(text)) return 'found';
+        if (/\bERROR\b/.test(text)) return 'ERROR';
+        if (/\bWARNING\b/.test(text)) return 'WARNING';
+        if (/\bDEBUG\b/.test(text)) return 'DEBUG';
+        if (/slot|found|available|booked|valid reschedule/i.test(text)) return 'found';
         return 'INFO';
     }
 
-    function shouldShow(text) {
-        if (filterDebug.checked && /\bDEBUG\b/.test(text)) return false;
-        const q = searchFilter.value.trim();
-        if (q && !text.toLowerCase().includes(q.toLowerCase())) return false;
+    function classifyWarningText(text) {
+        const raw = (text || '').toLowerCase();
+        if (/rate\s*limit|scheduling limit|throttle|forbidden|\b429\b|busy|backoff/.test(raw)) return 'rate-limit';
+        if (/captcha|hcaptcha|challenge|verify you are human|recaptcha/.test(raw)) return 'captcha';
+        if (/network|connection|timeout|timed out|dns|proxy|vpn|unreachable|connection reset/.test(raw)) return 'network';
+        if (/config|configuration|missing|invalid|parse|selector|schedule id|facility id|country code/.test(raw)) return 'config';
+        return 'other';
+    }
+
+    function shouldShowEntry(entry) {
+        if (filterDebug.checked && /\bDEBUG\b/.test(entry.text)) {
+            return false;
+        }
+        if (warningOnly.checked && !entry.warningSeverity) {
+            return false;
+        }
+        if (entry.warningSeverity && !state.warningFilters.has(entry.warningSeverity)) {
+            return false;
+        }
+
+        const query = searchFilter.value.trim().toLowerCase();
+        if (query) {
+            const hay = `${entry.text} ${entry.warningSeverity || ''}`.toLowerCase();
+            if (!hay.includes(query)) {
+                return false;
+            }
+        }
         return true;
     }
 
-    function appendLine(text) {
-        count++;
-        const div = document.createElement('div');
-        div.className = 'log-line ' + levelClass(text);
-        div.textContent = text;
-        div.dataset.text = text;
-        if (!shouldShow(text)) div.style.display = 'none';
-        container.appendChild(div);
-        lineCount.textContent = count + ' lines';
-        if (autoScroll.checked) container.scrollTop = container.scrollHeight;
+    function applyFiltersToLogs() {
+        for (const entry of state.logEntries) {
+            if (!entry.element) continue;
+            entry.element.style.display = shouldShowEntry(entry) ? '' : 'none';
+        }
     }
 
-    function reapplyFilters() {
-        container.querySelectorAll('.log-line').forEach(div => {
-            div.style.display = shouldShow(div.dataset.text) ? '' : 'none';
+    function updateLineCounter() {
+        const label = `${state.count} line${state.count === 1 ? '' : 's'}`;
+        lineCountTop.textContent = label;
+        lineCountFooter.textContent = label;
+    }
+
+    function registerTimelineEvent(kind, timestampMs, label, lineIndex) {
+        state.timelineEvents.push({ kind, timestampMs, label, lineIndex });
+        if (state.timelineEvents.length > 80) {
+            state.timelineEvents.shift();
+        }
+        renderTimelineLane();
+    }
+
+    function renderTimelineLane() {
+        timelineLane.innerHTML = '';
+        if (state.timelineEvents.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'timeline-empty';
+            empty.textContent = 'Waiting for check markers (start, warning, completion, next sleep).';
+            timelineLane.appendChild(empty);
+            return;
+        }
+
+        for (const event of state.timelineEvents.slice(-28)) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = `timeline-event ${event.kind}`;
+            const timeLabel = event.timestampMs ? new Date(event.timestampMs).toLocaleTimeString() : 'now';
+            button.textContent = `${event.label} ${timeLabel}`;
+            button.title = 'Jump to matching log line';
+            button.addEventListener('click', () => jumpToLogIndex(event.lineIndex));
+            timelineLane.appendChild(button);
+        }
+    }
+
+    function updateCycleSummary() {
+        const cycle = state.currentCycle;
+        cycleCheckId.textContent = cycle.checkId == null ? '-' : String(cycle.checkId);
+        cycleDuration.textContent = cycle.durationSeconds == null ? '-' : `${cycle.durationSeconds}s`;
+        cycleWarningCount.textContent = String(cycle.warningCount || 0);
+        cycleDateStatus.textContent = cycle.dateStatus || 'pending';
+    }
+
+    function processLineMilestones(entry, lineIndex) {
+        const text = entry.text;
+        const ts = entry.timestampMs || Date.now();
+
+        const startMatch = text.match(/Starting check\s*#\s*(\d+)/i);
+        if (startMatch) {
+            state.currentCycle = {
+                checkId: Number(startMatch[1]),
+                startTs: ts,
+                warningCount: 0,
+                dateStatus: 'running',
+                durationSeconds: null,
+                completedAt: 0,
+            };
+            registerTimelineEvent('start', ts, `Check ${startMatch[1]} start`, lineIndex);
+            updateCycleSummary();
+            return;
+        }
+
+        if (entry.warningSeverity) {
+            state.currentCycle.warningCount += 1;
+            registerTimelineEvent('warning', ts, severityLabels[entry.warningSeverity] || 'Warning', lineIndex);
+        }
+
+        if (/no better date|no earlier date|no suitable dates|no available dates/i.test(text)) {
+            state.currentCycle.dateStatus = 'no-match';
+            updateCycleSummary();
+        }
+
+        if (/valid reschedule|earlier date found|available date found|slot found|booked/i.test(text)) {
+            state.currentCycle.dateStatus = 'candidate-found';
+            updateCycleSummary();
+        }
+
+        const completionMatch = text.match(/Check\s*#\s*(\d+).*completed/i);
+        if (completionMatch || /completed successfully/i.test(text)) {
+            const doneId = completionMatch ? Number(completionMatch[1]) : state.currentCycle.checkId;
+            if (state.currentCycle.startTs > 0) {
+                const elapsed = Math.max(1, Math.round((ts - state.currentCycle.startTs) / 1000));
+                state.currentCycle.durationSeconds = elapsed;
+            }
+            state.currentCycle.completedAt = ts;
+            state.currentCycle.dateStatus = state.currentCycle.dateStatus === 'running' ? 'completed' : state.currentCycle.dateStatus;
+            registerTimelineEvent('complete', ts, `Check ${doneId || '-'} done`, lineIndex);
+            updateCycleSummary();
+        }
+
+        if (/next check at|sleeping/i.test(text)) {
+            registerTimelineEvent('sleep', ts, 'Next sleep', lineIndex);
+        }
+    }
+
+    function appendLine(text) {
+        const entry = {
+            text,
+            level: levelClass(text),
+            timestampMs: parseTimestampMs(text),
+            warningSeverity: /\bWARNING\b/.test(text) ? classifyWarningText(text) : '',
+            element: null,
+        };
+
+        const div = document.createElement('div');
+        div.className = `log-line ${entry.level}`;
+        div.textContent = text;
+        div.dataset.text = text;
+        div.dataset.timestampMs = String(entry.timestampMs || 0);
+        div.dataset.warningSeverity = entry.warningSeverity || '';
+
+        if (entry.warningSeverity) {
+            const dot = document.createElement('span');
+            dot.className = `severity-dot ${entry.warningSeverity}`;
+            div.prepend(dot);
+        }
+
+        div.addEventListener('click', () => {
+            if (entry.warningSeverity) {
+                selectNearestWarningByTimestamp(entry.timestampMs || Date.now());
+            }
+        });
+
+        entry.element = div;
+        state.logEntries.push(entry);
+        state.count += 1;
+        updateLineCounter();
+
+        container.appendChild(div);
+        processLineMilestones(entry, state.logEntries.length - 1);
+
+        if (!shouldShowEntry(entry)) {
+            div.style.display = 'none';
+        }
+
+        if (autoScroll.checked) {
+            container.scrollTop = container.scrollHeight;
+        }
+    }
+
+    function clearLines() {
+        container.innerHTML = '';
+        state.logEntries = [];
+        state.count = 0;
+        state.timelineEvents = [];
+        renderTimelineLane();
+        updateCycleSummary();
+        updateLineCounter();
+    }
+
+    function findClosestLogIndex(targetMs, warningOnlyMatch) {
+        if (!targetMs) return -1;
+        let bestIndex = -1;
+        let bestDiff = Number.POSITIVE_INFINITY;
+
+        for (let i = 0; i < state.logEntries.length; i++) {
+            const entry = state.logEntries[i];
+            if (!entry.timestampMs) continue;
+            if (warningOnlyMatch && !entry.warningSeverity) continue;
+
+            const diff = Math.abs(entry.timestampMs - targetMs);
+            if (diff < bestDiff) {
+                bestDiff = diff;
+                bestIndex = i;
+            }
+        }
+        return bestIndex;
+    }
+
+    function jumpToLogIndex(index) {
+        if (index < 0 || index >= state.logEntries.length) return;
+        const entry = state.logEntries[index];
+        if (!entry || !entry.element) return;
+
+        if (state.highlightedLineEl) {
+            state.highlightedLineEl.classList.remove('jump-target');
+        }
+
+        state.highlightedLineEl = entry.element;
+        entry.element.classList.add('jump-target');
+        entry.element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+        setTimeout(() => {
+            if (state.highlightedLineEl === entry.element) {
+                entry.element.classList.remove('jump-target');
+                state.highlightedLineEl = null;
+            }
+        }, 2300);
+    }
+
+    function jumpToMatchingLogFromWarning(item) {
+        if (!item) return;
+        const targetMs = Number(item.created_unix || 0) * 1000;
+        let index = findClosestLogIndex(targetMs, true);
+
+        if (index < 0 && item.label) {
+            const probe = String(item.label).toLowerCase().split(/\s+/).filter(Boolean).slice(0, 3);
+            index = state.logEntries.findIndex((entry) => {
+                const text = entry.text.toLowerCase();
+                return probe.length > 0 && probe.some((token) => token.length > 3 && text.includes(token));
+            });
+        }
+
+        if (index >= 0) {
+            jumpToLogIndex(index);
+        }
+    }
+
+    function renderSparkline(svgEl, values, lineColor) {
+        svgEl.innerHTML = '';
+        if (!values || values.length === 0) return;
+
+        const width = 220;
+        const height = 30;
+        const max = Math.max(...values, 1);
+        const step = values.length > 1 ? width / (values.length - 1) : width;
+        const points = values.map((v, i) => {
+            const x = i * step;
+            const y = height - (v / max) * (height - 2) - 1;
+            return `${x.toFixed(2)},${y.toFixed(2)}`;
+        }).join(' ');
+
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+        line.setAttribute('points', points);
+        line.setAttribute('fill', 'none');
+        line.setAttribute('stroke', lineColor);
+        line.setAttribute('stroke-width', '1.8');
+        svgEl.appendChild(line);
+    }
+
+    function updateTrendWidgets(trends) {
+        const hourlyValues = trends && trends.hourly && Array.isArray(trends.hourly.values) ? trends.hourly.values : [];
+        const dailyValues = trends && trends.daily && Array.isArray(trends.daily.values) ? trends.daily.values : [];
+
+        renderSparkline(sparkHourly, hourlyValues, '#58a6ff');
+        renderSparkline(sparkDaily, dailyValues, '#d2a8ff');
+
+        const hourlyTotal = hourlyValues.reduce((acc, value) => acc + Number(value || 0), 0);
+        const dailyTotal = dailyValues.reduce((acc, value) => acc + Number(value || 0), 0);
+        sparkHourlyTotal.textContent = String(hourlyTotal);
+        sparkDailyTotal.textContent = String(dailyTotal);
+    }
+
+    function updateRetentionWidget(retention) {
+        const safe = retention || {};
+        retentionCount.textContent = String(safe.artifact_count || 0);
+        retentionSize.textContent = safe.total_size_human || '0 B';
+        retentionOldest.textContent = safe.oldest && safe.oldest.created ? safe.oldest.created : '-';
+        retentionNewest.textContent = safe.newest && safe.newest.created ? safe.newest.created : '-';
+    }
+
+    function refreshSeverityChips(counts) {
+        severityChipRow.innerHTML = '';
+        for (const key of severityOrder) {
+            const chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = 'chip';
+            chip.dataset.severity = key;
+
+            if (!state.warningFilters.has(key)) {
+                chip.classList.add('inactive');
+            }
+
+            const count = Number((counts && counts[key]) || 0);
+            chip.innerHTML = `<span>${severityLabels[key]}</span><strong>${count}</strong>`;
+            chip.addEventListener('click', () => {
+                if (state.warningFilters.has(key)) {
+                    if (state.warningFilters.size === 1) return;
+                    state.warningFilters.delete(key);
+                } else {
+                    state.warningFilters.add(key);
+                }
+                refreshSeverityChips(counts);
+                renderWarningGallery();
+                applyFiltersToLogs();
+            });
+
+            severityChipRow.appendChild(chip);
+        }
+    }
+
+    function renderWarningGallery() {
+        const search = searchFilter.value.trim().toLowerCase();
+        warningsStrip.innerHTML = '';
+
+        const visibleItems = state.warningItems.filter((item) => {
+            const severity = item.severity || 'other';
+            if (!state.warningFilters.has(severity)) return false;
+            if (!search) return true;
+            const hay = `${item.label || ''} ${item.name || ''} ${severity}`.toLowerCase();
+            return hay.includes(search);
+        });
+
+        if (visibleItems.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'warning-empty';
+            empty.textContent = 'No warning screenshots match the active filters.';
+            warningsStrip.appendChild(empty);
+
+            if (state.selectedWarningIndex >= 0) {
+                state.selectedWarningIndex = -1;
+                previewBox.className = 'empty';
+                previewBox.textContent = 'Select a screenshot to inspect details, then jump to related log lines.';
+            }
+            return;
+        }
+
+        const selectedName = state.warningItems[state.selectedWarningIndex] ? state.warningItems[state.selectedWarningIndex].name : '';
+
+        for (const item of visibleItems) {
+            const card = document.createElement('button');
+            card.type = 'button';
+            card.className = 'warning-card';
+            if (item.name === selectedName) {
+                card.classList.add('active');
+            }
+
+            const img = document.createElement('img');
+            img.loading = 'lazy';
+            img.src = `${item.url}?t=${item.created_unix}`;
+            img.alt = item.name || 'warning screenshot';
+            card.appendChild(img);
+
+            const meta = document.createElement('div');
+            meta.className = 'warning-meta';
+
+            const tag = document.createElement('span');
+            tag.className = `warning-tag ${item.severity || 'other'}`;
+            tag.textContent = severityLabels[item.severity] || 'Other';
+            meta.appendChild(tag);
+
+            const label = document.createElement('div');
+            label.className = 'warning-label';
+            label.textContent = item.label || item.name || 'warning screenshot';
+            meta.appendChild(label);
+
+            const details = document.createElement('div');
+            details.textContent = `${item.created || 'Unknown time'} - ${item.size_human || ''}`;
+            meta.appendChild(details);
+
+            card.appendChild(meta);
+            card.addEventListener('click', () => {
+                const index = state.warningItems.findIndex((probe) => probe.name === item.name);
+                if (index >= 0) selectWarning(index, false);
+            });
+            card.addEventListener('dblclick', () => {
+                const index = state.warningItems.findIndex((probe) => probe.name === item.name);
+                if (index >= 0) selectWarning(index, true);
+            });
+
+            warningsStrip.appendChild(card);
+        }
+
+        if (state.selectedWarningIndex < 0 && visibleItems.length > 0) {
+            const index = state.warningItems.findIndex((probe) => probe.name === visibleItems[0].name);
+            if (index >= 0) selectWarning(index, false);
+        }
+    }
+
+    function renderPreview(item) {
+        previewBox.className = '';
+        previewBox.innerHTML = '';
+
+        const image = document.createElement('img');
+        image.id = 'preview-image';
+        image.src = `${item.url}?t=${item.created_unix}`;
+        image.alt = item.name || 'warning screenshot';
+        previewBox.appendChild(image);
+
+        const meta = document.createElement('div');
+        meta.className = 'preview-meta';
+        meta.innerHTML = `
+            <div><strong>${item.label || item.name || 'Warning screenshot'}</strong></div>
+            <div>Severity: ${severityLabels[item.severity] || 'Other'}</div>
+            <div>Captured: ${item.created || '-'}</div>
+            <div>Size: ${item.size_human || '-'}</div>
+        `;
+        previewBox.appendChild(meta);
+
+        const actions = document.createElement('div');
+        actions.className = 'preview-actions';
+
+        const jumpBtn = document.createElement('button');
+        jumpBtn.type = 'button';
+        jumpBtn.className = 'action-btn primary';
+        jumpBtn.textContent = 'Jump To Matching Log';
+        jumpBtn.addEventListener('click', () => jumpToMatchingLogFromWarning(item));
+        actions.appendChild(jumpBtn);
+
+        const lightboxBtn = document.createElement('button');
+        lightboxBtn.type = 'button';
+        lightboxBtn.className = 'action-btn';
+        lightboxBtn.textContent = 'Open Lightbox';
+        lightboxBtn.addEventListener('click', () => openLightbox(state.selectedWarningIndex));
+        actions.appendChild(lightboxBtn);
+
+        const openRaw = document.createElement('a');
+        openRaw.className = 'action-btn';
+        openRaw.href = item.url;
+        openRaw.target = '_blank';
+        openRaw.rel = 'noopener noreferrer';
+        openRaw.textContent = 'Open Raw PNG';
+        actions.appendChild(openRaw);
+
+        previewBox.appendChild(actions);
+    }
+
+    function selectWarning(index, openModal) {
+        if (index < 0 || index >= state.warningItems.length) return;
+        state.selectedWarningIndex = index;
+        const item = state.warningItems[index];
+        renderWarningGallery();
+        renderPreview(item);
+        jumpToMatchingLogFromWarning(item);
+        if (openModal) {
+            openLightbox(index);
+        }
+    }
+
+    function selectNearestWarningByTimestamp(timestampMs) {
+        if (!timestampMs || state.warningItems.length === 0) return;
+        let best = -1;
+        let diff = Number.POSITIVE_INFINITY;
+
+        for (let i = 0; i < state.warningItems.length; i++) {
+            const itemTs = Number(state.warningItems[i].created_unix || 0) * 1000;
+            if (!itemTs) continue;
+            const candidate = Math.abs(itemTs - timestampMs);
+            if (candidate < diff) {
+                diff = candidate;
+                best = i;
+            }
+        }
+
+        if (best >= 0) {
+            selectWarning(best, false);
+        }
+    }
+
+    function openLightbox(index) {
+        if (index < 0 || index >= state.warningItems.length) return;
+        const item = state.warningItems[index];
+        state.selectedWarningIndex = index;
+
+        lightboxTitle.textContent = item.label || item.name || 'Warning Screenshot';
+        lightboxImage.src = `${item.url}?t=${item.created_unix}`;
+        lightboxMeta.innerHTML = `
+            <div>Severity: ${severityLabels[item.severity] || 'Other'}</div>
+            <div>Captured: ${item.created || '-'}</div>
+            <div>File: ${item.name || '-'}</div>
+            <div>Size: ${item.size_human || '-'}</div>
+        `;
+        lightboxOpenTab.href = item.url;
+        lightbox.classList.add('open');
+        lightbox.setAttribute('aria-hidden', 'false');
+    }
+
+    function closeLightbox() {
+        lightbox.classList.remove('open');
+        lightbox.setAttribute('aria-hidden', 'true');
+    }
+
+    function moveLightbox(step) {
+        if (state.warningItems.length === 0) return;
+        let next = state.selectedWarningIndex;
+        if (next < 0) next = 0;
+        next = (next + step + state.warningItems.length) % state.warningItems.length;
+        openLightbox(next);
+    }
+
+    function setWorkspaceMode() {
+        workspace.classList.toggle('stack-mode', !splitMode.checked);
+    }
+
+    function setServicePill(status, detail) {
+        servicePill.className = 'status-pill';
+        servicePill.textContent = `Service: ${status}${detail ? ` (${detail})` : ''}`;
+        if (status === 'active' || status === 'running') {
+            servicePill.classList.add('good');
+        } else if (status === 'activating' || status === 'deactivating') {
+            servicePill.classList.add('warn');
+        } else if (status === 'failed' || status === 'inactive') {
+            servicePill.classList.add('bad');
+        }
+    }
+
+    function setAuthPill(tokenRequired, sessionAuthenticated) {
+        authPill.className = 'status-pill';
+        if (!tokenRequired) {
+            authPill.textContent = 'Session: token disabled';
+            authPill.classList.add('good');
+            return;
+        }
+        authPill.textContent = sessionAuthenticated ? 'Session: authenticated' : 'Session: not authenticated';
+        authPill.classList.add(sessionAuthenticated ? 'good' : 'bad');
+    }
+
+    async function serviceAction(action) {
+        statusText.textContent = `${action} request in progress...`;
+        try {
+            const response = await fetch(`/api/service/${action}`, {
+                method: 'POST',
+                headers: { 'Accept': 'application/json' },
+            });
+            const payload = await response.json();
+            const serviceStatus = payload && payload.service_status ? payload.service_status.active_state : 'unknown';
+            const subState = payload && payload.service_status ? payload.service_status.sub_state : '';
+            setServicePill(serviceStatus || 'unknown', subState || '');
+            statusText.textContent = payload.message || `${action} request completed`;
+        } catch (error) {
+            statusText.textContent = `${action} request failed`;
+            setServicePill('unknown', 'error');
+        }
+    }
+
+    async function refreshRuntimeAndAuth() {
+        try {
+            const [runtimeRes, authRes] = await Promise.all([
+                fetch('/api/runtime', { cache: 'no-store' }),
+                fetch('/api/auth/status', { cache: 'no-store' }),
+            ]);
+
+            if (runtimeRes.ok) {
+                const runtime = await runtimeRes.json();
+                setServicePill(runtime.checker_service || 'unknown', runtime.checker_sub_state || '');
+            }
+
+            if (authRes.ok) {
+                const auth = await authRes.json();
+                setAuthPill(Boolean(auth.token_required), Boolean(auth.session_authenticated));
+            }
+        } catch (error) {
+            setServicePill('unknown', 'unreachable');
+        }
+    }
+
+    function getCurrentPresetConfig() {
+        return {
+            hideDebug: filterDebug.checked,
+            warningOnly: warningOnly.checked,
+            sideBySide: splitMode.checked,
+            search: searchFilter.value || '',
+            severities: [...state.warningFilters],
+        };
+    }
+
+    function applyPresetConfig(config) {
+        filterDebug.checked = Boolean(config.hideDebug);
+        warningOnly.checked = Boolean(config.warningOnly);
+        splitMode.checked = config.sideBySide !== false;
+        searchFilter.value = config.search || '';
+
+        state.warningFilters = new Set(Array.isArray(config.severities) && config.severities.length ? config.severities : severityOrder);
+        setWorkspaceMode();
+        applyFiltersToLogs();
+        renderWarningGallery();
+        refreshSeverityChips(getSeverityCountsFromCurrentItems());
+    }
+
+    function storageKeyForPresets() {
+        return 'visa.logs.custom.presets.v1';
+    }
+
+    function loadCustomPresets() {
+        try {
+            const raw = localStorage.getItem(storageKeyForPresets());
+            if (!raw) {
+                state.customPresets = {};
+                return;
+            }
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object') {
+                state.customPresets = parsed;
+            } else {
+                state.customPresets = {};
+            }
+        } catch (error) {
+            state.customPresets = {};
+        }
+    }
+
+    function saveCustomPresets() {
+        localStorage.setItem(storageKeyForPresets(), JSON.stringify(state.customPresets));
+    }
+
+    function refreshPresetSelect() {
+        presetSelect.innerHTML = '';
+
+        for (const [key, preset] of Object.entries(builtInPresets)) {
+            const option = document.createElement('option');
+            option.value = key;
+            option.textContent = `[Built-in] ${preset.name}`;
+            presetSelect.appendChild(option);
+        }
+
+        for (const [key, preset] of Object.entries(state.customPresets)) {
+            const option = document.createElement('option');
+            option.value = `custom:${key}`;
+            option.textContent = `[Saved] ${preset.name || key}`;
+            presetSelect.appendChild(option);
+        }
+    }
+
+    function resolveSelectedPreset() {
+        const value = presetSelect.value;
+        if (!value) return null;
+        if (value.startsWith('custom:')) {
+            const key = value.slice(7);
+            return state.customPresets[key] || null;
+        }
+        return builtInPresets[value] || null;
+    }
+
+    function getSeverityCountsFromCurrentItems() {
+        const counts = {};
+        for (const key of severityOrder) {
+            counts[key] = 0;
+        }
+        for (const item of state.warningItems) {
+            const severity = item.severity || 'other';
+            counts[severity] = (counts[severity] || 0) + 1;
+        }
+        return counts;
+    }
+
+    function buildPaletteActions() {
+        const actions = [
+            { label: 'Go to Config page', run: () => { window.location.href = '/'; } },
+            { label: 'Go to Control page', run: () => { window.location.href = '/dashboard'; } },
+            { label: 'Go to Analytics page', run: () => { window.location.href = '/analytics'; } },
+            { label: 'Go to Update page', run: () => { window.location.href = '/update'; } },
+            { label: 'Toggle side-by-side mode', run: () => { splitMode.checked = !splitMode.checked; setWorkspaceMode(); } },
+            { label: 'Refresh warning screenshots', run: () => { refreshWarningScreenshots(); } },
+            { label: 'Start checker service', run: () => { serviceAction('start'); } },
+            { label: 'Stop checker service', run: () => { serviceAction('stop'); } },
+            { label: 'Restart checker service', run: () => { serviceAction('restart'); } },
+            { label: 'Focus filter search', run: () => { searchFilter.focus(); } },
+            { label: 'Clear visible logs', run: () => { clearLines(); } },
+            { label: 'Open latest warning in lightbox', run: () => { if (state.warningItems.length) openLightbox(0); } },
+        ];
+
+        for (const [key, preset] of Object.entries(state.customPresets)) {
+            actions.push({
+                label: `Apply saved preset: ${preset.name || key}`,
+                run: () => { applyPresetConfig(preset); }
+            });
+        }
+
+        state.paletteActions = actions;
+        state.paletteFilteredActions = actions;
+        state.paletteIndex = 0;
+    }
+
+    function renderPaletteResults() {
+        paletteResults.innerHTML = '';
+        if (state.paletteFilteredActions.length === 0) {
+            const div = document.createElement('div');
+            div.className = 'palette-item';
+            div.textContent = 'No matching commands';
+            paletteResults.appendChild(div);
+            return;
+        }
+
+        state.paletteFilteredActions.forEach((action, index) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'palette-item';
+            if (index === state.paletteIndex) {
+                button.classList.add('active');
+            }
+            button.textContent = action.label;
+            button.addEventListener('click', () => {
+                closePalette();
+                action.run();
+            });
+            paletteResults.appendChild(button);
         });
     }
 
-    filterDebug.addEventListener('change', reapplyFilters);
-    searchFilter.addEventListener('input', reapplyFilters);
-    clearBtn.addEventListener('click', () => {
-        container.innerHTML = '';
-        count = 0;
-        lineCount.textContent = '0 lines';
-    });
+    function filterPalette() {
+        const query = paletteInput.value.trim().toLowerCase();
+        if (!query) {
+            state.paletteFilteredActions = state.paletteActions;
+        } else {
+            state.paletteFilteredActions = state.paletteActions.filter((action) => action.label.toLowerCase().includes(query));
+        }
+        state.paletteIndex = 0;
+        renderPaletteResults();
+    }
+
+    function openPalette() {
+        buildPaletteActions();
+        paletteOverlay.classList.add('open');
+        paletteOverlay.setAttribute('aria-hidden', 'false');
+        paletteInput.value = '';
+        filterPalette();
+        setTimeout(() => paletteInput.focus(), 20);
+    }
+
+    function closePalette() {
+        paletteOverlay.classList.remove('open');
+        paletteOverlay.setAttribute('aria-hidden', 'true');
+    }
+
+    function runSelectedPaletteAction() {
+        if (state.paletteFilteredActions.length === 0) return;
+        const action = state.paletteFilteredActions[state.paletteIndex];
+        if (!action) return;
+        closePalette();
+        action.run();
+    }
+
+    async function refreshWarningScreenshots() {
+        warningsStatus.textContent = 'Loading...';
+        try {
+            const response = await fetch('/api/warnings/screenshots?limit=120', { cache: 'no-store' });
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+
+            const payload = await response.json();
+            state.warningItems = Array.isArray(payload.items) ? payload.items : [];
+            warningsStatus.textContent = `${payload.count || 0} visible of ${payload.retention && payload.retention.artifact_count ? payload.retention.artifact_count : 0}`;
+
+            refreshSeverityChips(payload.severity_counts || getSeverityCountsFromCurrentItems());
+            updateRetentionWidget(payload.retention || {});
+            updateTrendWidgets(payload.trends || {});
+            renderWarningGallery();
+        } catch (error) {
+            warningsStatus.textContent = 'Unavailable';
+        }
+    }
 
     function connect() {
         const es = new EventSource('/stream/logs');
 
         es.onopen = () => {
             statusDot.classList.remove('disconnected');
-            statusText.textContent = 'Connected – streaming live';
+            statusText.textContent = 'Connected - streaming live';
         };
 
-        es.onmessage = (e) => {
-            if (e.data) appendLine(e.data);
+        es.onmessage = (event) => {
+            if (event.data) appendLine(event.data);
         };
 
         es.onerror = () => {
             statusDot.classList.add('disconnected');
-            statusText.textContent = 'Disconnected – reconnecting in 5s…';
+            statusText.textContent = 'Disconnected - reconnecting in 5s...';
             es.close();
             setTimeout(connect, 5000);
         };
     }
 
+    filterDebug.addEventListener('change', applyFiltersToLogs);
+    warningOnly.addEventListener('change', applyFiltersToLogs);
+    splitMode.addEventListener('change', setWorkspaceMode);
+    searchFilter.addEventListener('input', () => {
+        applyFiltersToLogs();
+        renderWarningGallery();
+    });
+
+    clearBtn.addEventListener('click', clearLines);
+    refreshWarningsBtn.addEventListener('click', refreshWarningScreenshots);
+
+    serviceStartBtn.addEventListener('click', () => serviceAction('start'));
+    serviceStopBtn.addEventListener('click', () => serviceAction('stop'));
+    serviceRestartBtn.addEventListener('click', () => serviceAction('restart'));
+
+    applyPresetBtn.addEventListener('click', () => {
+        const preset = resolveSelectedPreset();
+        if (preset) applyPresetConfig(preset);
+    });
+
+    savePresetBtn.addEventListener('click', () => {
+        const name = (window.prompt('Preset name:', '') || '').trim();
+        if (!name) return;
+        const key = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        if (!key) return;
+
+        state.customPresets[key] = {
+            name,
+            ...getCurrentPresetConfig(),
+        };
+        saveCustomPresets();
+        refreshPresetSelect();
+        presetSelect.value = `custom:${key}`;
+    });
+
+    deletePresetBtn.addEventListener('click', () => {
+        const value = presetSelect.value;
+        if (!value.startsWith('custom:')) return;
+        const key = value.slice(7);
+        delete state.customPresets[key];
+        saveCustomPresets();
+        refreshPresetSelect();
+    });
+
+    lightboxCloseBtn.addEventListener('click', closeLightbox);
+    lightboxPrevBtn.addEventListener('click', () => moveLightbox(-1));
+    lightboxNextBtn.addEventListener('click', () => moveLightbox(1));
+    lightboxJumpLogBtn.addEventListener('click', () => {
+        if (state.selectedWarningIndex >= 0) {
+            jumpToMatchingLogFromWarning(state.warningItems[state.selectedWarningIndex]);
+        }
+    });
+
+    lightbox.addEventListener('click', (event) => {
+        if (event.target === lightbox) {
+            closeLightbox();
+        }
+    });
+
+    openPaletteBtn.addEventListener('click', openPalette);
+    paletteOverlay.addEventListener('click', (event) => {
+        if (event.target === paletteOverlay) {
+            closePalette();
+        }
+    });
+    paletteInput.addEventListener('input', filterPalette);
+
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'k' && (event.ctrlKey || event.metaKey)) {
+            event.preventDefault();
+            if (paletteOverlay.classList.contains('open')) {
+                closePalette();
+            } else {
+                openPalette();
+            }
+            return;
+        }
+
+        if (lightbox.classList.contains('open')) {
+            if (event.key === 'Escape') {
+                closeLightbox();
+                return;
+            }
+            if (event.key === 'ArrowLeft') {
+                moveLightbox(-1);
+                return;
+            }
+            if (event.key === 'ArrowRight') {
+                moveLightbox(1);
+                return;
+            }
+            if (event.key.toLowerCase() === 'j') {
+                if (state.selectedWarningIndex >= 0) {
+                    jumpToMatchingLogFromWarning(state.warningItems[state.selectedWarningIndex]);
+                }
+            }
+            return;
+        }
+
+        if (paletteOverlay.classList.contains('open')) {
+            if (event.key === 'Escape') {
+                closePalette();
+                return;
+            }
+            if (event.key === 'ArrowDown') {
+                event.preventDefault();
+                state.paletteIndex = Math.min(state.paletteIndex + 1, Math.max(0, state.paletteFilteredActions.length - 1));
+                renderPaletteResults();
+                return;
+            }
+            if (event.key === 'ArrowUp') {
+                event.preventDefault();
+                state.paletteIndex = Math.max(0, state.paletteIndex - 1);
+                renderPaletteResults();
+                return;
+            }
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                runSelectedPaletteAction();
+            }
+        }
+    });
+
+    loadCustomPresets();
+    refreshPresetSelect();
+    presetSelect.value = 'default';
+    applyPresetConfig(builtInPresets.default);
+    updateCycleSummary();
+    renderTimelineLane();
+    setWorkspaceMode();
+
     connect();
+    refreshWarningScreenshots();
+    refreshRuntimeAndAuth();
+    setInterval(refreshWarningScreenshots, 15000);
+    setInterval(refreshRuntimeAndAuth, 12000);
 })();
 </script>
 </body>

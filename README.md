@@ -8,6 +8,14 @@
 
 This comprehensive automation tool helps Canadian users find earlier US visa appointment dates by continuously monitoring the official US Visa Information Service (AIS) website. Built with Python, Selenium, and a user-friendly web interface.
 
+## 🧭 Maintenance & Scope
+
+- **Maintenance Status**: Actively maintained. If AIS changes break selectors/endpoints, update `selectors.yml` first and then open an issue or PR with logs/artifacts.
+- **Notification Resilience**: SMTP/Gmail failures are logged but do not stop monitoring; checks continue and other configured channels (Telegram/webhook/Pushover/SendGrid) can still deliver alerts.
+- **Portal Scope**: Optimized for AIS **NIV** appointment flows (`/niv`).
+- **ASC Scope**: This tool does not automate separate ASC/biometrics appointments used in some regions; it focuses on the consular appointment workflow.
+- **Location Coverage**: Built-in facility map covers major Canada locations, and you can override routing with `COUNTRY_CODE`, `SCHEDULE_ID`, and `FACILITY_ID`.
+
 ## 🚀 Features
 
 - **Automated Appointment Monitoring**: Continuously checks for earlier appointment availability
@@ -124,6 +132,19 @@ Legacy scripts (`install_ubuntu.sh`, `install_debian.sh`, `install_fedora.sh`, `
 
 These scripts will install Python3, pip, create a virtual environment, install dependencies, and create default configuration with wrapper scripts.
 
+### Reproducible Bootstrap (Recommended)
+To rebuild a clean virtual environment with dependency and import health checks:
+
+```bash
+python bootstrap_env.py --venv-dir venv --fresh
+```
+
+Then run a non-invasive startup validation:
+
+```bash
+python visa_appointment_checker.py --self-check
+```
+
 ### Linux: Install as a systemd service
 The repository includes a ready-to-customize `visa-checker.service` file for unattended startup.
 
@@ -198,8 +219,12 @@ http://<server-ip>:5000/?token=<your-token>
 ```
 
 Useful real-time endpoints:
+- `/control` for start/stop/restart controls plus process and date-history stats
 - `/logs` for live log stream (Server-Sent Events)
 - `/api/runtime` for service status + last log line
+- `/api/service/status` for full service/process/date stats payload
+- `/api/service/<start|stop|restart>` to control `visa-checker.service`
+- `/api/dates/history` for timestamped date sightings (includes repeated sightings)
 - `/api/update/status` for update progress
 
 ### Method 2: Manual Configuration
@@ -265,6 +290,8 @@ AUTO_BOOK = False
 
 # Test mode + date exclusions
 TEST_MODE = False
+TEST_MODE_SEND_NOTIFICATIONS = False
+SLOT_LEDGER_DB_PATH =
 EXCLUDED_DATE_RANGES =
 
 # Safety-first polling
@@ -464,6 +491,9 @@ Access the enhanced interface at: http://127.0.0.1:5000
 - `--frequency`: Check interval in minutes (defaults to the value in `config.ini`)
 - `--no-headless`: Run Chrome in a visible window for debugging and CAPTCHA solving
 - `--run-once`: Execute one check cycle and exit (recommended for Task Scheduler/cron)
+- `--test-mode`: Force safe test mode for this run (no probing/booking)
+- `--allow-test-notifications`: Allow outbound notifications while in test mode
+- `--self-check`: Validate config, selectors, webdriver readiness, and writable paths without login
 
 ### Essential AIS Parameters
 - `COUNTRY_CODE`: Regional AIS portal path segment (for example `en-ca`, `en-gb`).
@@ -540,6 +570,7 @@ tail -f visa_checker.log
 - Appointment availability checks with timing
 - Email notification sending
 - Errors and exceptions with performance context
+- Startup preflight checks for writable logs, artifacts, and slot-ledger DB paths
 
 ## ⚠️ Important Notes
 
@@ -551,13 +582,13 @@ tail -f visa_checker.log
 ### Portal Constraints You Must Plan For
 - **Rate limiting/throttling** can produce `Forbidden`, empty responses, or temporary lockouts when polling is too aggressive.
 - **System Busy windows** are common during release spikes and may behave like account/session throttles.
-- **Reschedule attempt limits** are finite; use `TEST_MODE`, conservative intervals, and dry-run defaults before enabling aggressive actions.
+- **Reschedule attempt limits** are finite (often around 3-7 attempts depending on region/policy); use `TEST_MODE`, conservative intervals, and dry-run defaults before enabling aggressive actions.
 - **Captcha/manual gates** are expected; run with `--no-headless` when intervention is needed.
 
 ### Administrative Risk Warnings
 - Automated usage may conflict with portal terms/policies depending on region and use pattern.
 - Incorrect answers in portal profile/pop-up questions can cause interview-day rejection or difficult recovery.
-- MRV fees can expire by time window even if technical checks continue running.
+- MRV fees can expire by time window (commonly one year) even if technical checks continue running.
 
 ### CAPTCHA Handling
 The AIS website uses hCaptcha. Our optimized system includes:
@@ -637,6 +668,7 @@ pip install webdriver-manager
 - Verify Gmail app password is correct
 - Check Gmail account settings
 - Ensure less secure apps are allowed (for older accounts)
+- Notification errors do not stop checker execution; monitoring continues.
 
 **"Login failed"**
 - Verify AIS credentials

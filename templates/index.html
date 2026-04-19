@@ -5,8 +5,36 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>US Visa Appointment Checker - Strategic Configuration</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 20px; background-color: #f5f5f5; }
-        .container { max-width: 700px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        html { scroll-behavior: smooth; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; background-color: #f5f5f5; }
+        .topbar {
+            position: sticky;
+            top: 0;
+            z-index: 99;
+            background: #1c2a39;
+            color: #f0f6fc;
+            border-bottom: 1px solid #2f3e50;
+            padding: 10px 18px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .topbar strong { font-size: 0.95rem; letter-spacing: 0.02em; }
+        .topbar-nav { display: flex; gap: 10px; flex-wrap: wrap; }
+        .topbar-nav a {
+            color: #dce9f7;
+            text-decoration: none;
+            font-size: 0.85rem;
+            padding: 6px 10px;
+            border-radius: 999px;
+            border: 1px solid #3b4d63;
+            background: rgba(255, 255, 255, 0.04);
+        }
+        .topbar-nav a:hover { background: rgba(255, 255, 255, 0.14); }
+        .page-shell { padding: 18px; }
+        .container { max-width: 900px; margin: 0 auto; background: white; padding: 24px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
         h1 { color: #2c3e50; text-align: center; margin-bottom: 30px; }
         h2 { margin-top: 25px; margin-bottom: 15px; }
         form { max-width: 100%; }
@@ -21,16 +49,112 @@
         .info-box { background-color: #f0f8ff; border-left: 4px solid #1e90ff; padding: 15px; margin: 20px 0; border-radius: 0 5px 5px 0; }
         .checkbox-label { display: flex; align-items: center; margin-top: 15px; }
         .checkbox-label input[type="checkbox"] { margin-right: 10px; margin-top: 0; }
+        .quick-actions {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+            gap: 10px;
+            margin: 0 0 18px 0;
+        }
+        .quick-actions a {
+            text-decoration: none;
+            border: 1px solid #d7e3f0;
+            background: #f8fbff;
+            color: #1c3550;
+            border-radius: 8px;
+            padding: 10px 12px;
+            font-weight: 600;
+            font-size: 0.9rem;
+            display: block;
+        }
+        .quick-actions a small {
+            margin: 4px 0 0 0;
+            color: #60758d;
+            font-weight: 500;
+            font-size: 0.78rem;
+        }
+        .section-jumps {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin: 12px 0 18px 0;
+        }
+        .section-jumps a {
+            text-decoration: none;
+            color: #0f4d86;
+            border: 1px solid #c9d9ea;
+            background: #eef5fc;
+            border-radius: 999px;
+            padding: 6px 10px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+        .floating-control {
+            position: fixed;
+            right: 16px;
+            bottom: 16px;
+            z-index: 98;
+            text-decoration: none;
+            color: #fff;
+            background: linear-gradient(135deg, #1d8f6a, #20738f);
+            border-radius: 999px;
+            padding: 10px 14px;
+            font-size: 0.85rem;
+            font-weight: 700;
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
+        }
+        @media (max-width: 760px) {
+            .container { padding: 16px; }
+            .page-shell { padding: 10px; }
+            h1 { font-size: 1.3rem; margin-bottom: 14px; }
+            .floating-control { right: 10px; bottom: 10px; padding: 10px 12px; }
+        }
     </style>
 </head>
 <body>
+    <header class="topbar">
+        <strong>US Visa Checker</strong>
+        <nav class="topbar-nav">
+            <a href="/dashboard">Remote Control</a>
+            <a href="/logs">Live Logs</a>
+            <a href="/analytics">Analytics</a>
+            <a href="/update">Update</a>
+            <a href="/logout">Logout</a>
+        </nav>
+    </header>
+
+    <div class="page-shell">
     <div class="container">
         <h1>🚀 US Visa Appointment Checker - Strategic Configuration</h1>
+
+        <div class="quick-actions">
+            <a href="/dashboard">🎛 Open Remote Control
+                <small>Start, stop, restart checker and view process stats</small>
+            </a>
+            <a href="/logs">📋 Open Live Logs
+                <small>Watch runtime output and troubleshooting logs</small>
+            </a>
+            <a href="/analytics">📊 Open Analytics
+                <small>Review slot outcomes and notification history</small>
+            </a>
+            <a href="/update">🔄 Open Update Center
+                <small>Pull latest code and dependencies</small>
+            </a>
+        </div>
+
+        <div class="section-jumps">
+            <a href="#credentials">Credentials</a>
+            <a href="#appointment">Appointment</a>
+            <a href="#strategic">Strategy</a>
+            <a href="#email-notify">Email</a>
+            <a href="#instant-notify">Instant Alerts</a>
+            <a href="#autobook-pref">Auto-Book</a>
+            <a href="#performance">Performance</a>
+        </div>
         
         {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
                 {% for category, message in messages %}
-                    <div style="background-color: #d4edda; border: 1px solid #c3e6cb; color: #155724; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+                    <div style="{% if category == 'error' %}background-color: #f8d7da; border: 1px solid #f5c6cb; color: #721c24;{% else %}background-color: #d4edda; border: 1px solid #c3e6cb; color: #155724;{% endif %} padding: 15px; border-radius: 5px; margin-bottom: 20px; white-space: pre-line;">
                         {{ message }}
                     </div>
                 {% endfor %}
@@ -56,7 +180,7 @@
         
         <form method="post">
         
-        <h2 style="color: #e74c3c; border-bottom: 2px solid #e74c3c; padding-bottom: 5px;">🔐 Account Credentials</h2>
+        <h2 id="credentials" style="color: #e74c3c; border-bottom: 2px solid #e74c3c; padding-bottom: 5px;">🔐 Account Credentials</h2>
         
         <label for="EMAIL">Email:</label>
         <input type="email" id="EMAIL" name="EMAIL" value="{{ current.EMAIL }}" required>
@@ -66,7 +190,7 @@
         <input type="password" id="PASSWORD" name="PASSWORD" value="{{ current.PASSWORD }}" required>
         <small>Your AIS account password</small>
 
-        <h2 style="color: #9b59b6; border-bottom: 2px solid #9b59b6; padding-bottom: 5px;">📅 Appointment Details</h2>
+        <h2 id="appointment" style="color: #9b59b6; border-bottom: 2px solid #9b59b6; padding-bottom: 5px;">📅 Appointment Details</h2>
 
         <label for="CURRENT_APPOINTMENT_DATE">Current Appointment Date (YYYY-MM-DD):</label>
         <input type="date" id="CURRENT_APPOINTMENT_DATE" name="CURRENT_APPOINTMENT_DATE" value="{{ current.CURRENT_APPOINTMENT_DATE }}" required>
@@ -100,7 +224,7 @@
         <input type="number" id="CHECK_FREQUENCY_MINUTES" name="CHECK_FREQUENCY_MINUTES" value="{{ current.CHECK_FREQUENCY_MINUTES }}" required>
         <small>Base checking interval (recommended: 3-5 minutes for optimal strategic optimization)</small>
 
-        <h2 style="color: #2E8B57; border-bottom: 2px solid #2E8B57; padding-bottom: 5px;">🚀 Strategic Optimization Settings</h2>
+        <h2 id="strategic" style="color: #2E8B57; border-bottom: 2px solid #2E8B57; padding-bottom: 5px;">🚀 Strategic Optimization Settings</h2>
         
         <label for="BURST_MODE_ENABLED" class="checkbox-label">
             <input type="checkbox" id="BURST_MODE_ENABLED" name="BURST_MODE_ENABLED" {% if current.BURST_MODE_ENABLED == 'True' %}checked{% endif %}> 💥 Enable Burst Mode
@@ -137,7 +261,7 @@
         </label>
         <small>Learn from appointment release patterns and adapt timing (recommended: enabled)</small>
 
-        <h2 style="color: #4682B4; border-bottom: 2px solid #4682B4; padding-bottom: 5px;">📧 Email Notification Settings</h2>
+        <h2 id="email-notify" style="color: #4682B4; border-bottom: 2px solid #4682B4; padding-bottom: 5px;">📧 Email Notification Settings</h2>
 
         <label for="SMTP_SERVER">SMTP Server:</label>
         <input type="text" id="SMTP_SERVER" name="SMTP_SERVER" value="{{ current.SMTP_SERVER }}" required>
@@ -181,7 +305,7 @@
         <input type="text" id="TIMEZONE" name="TIMEZONE" value="{{ current.TIMEZONE }}" placeholder="America/Toronto">
         <small>IANA timezone for prime-time window calculations (e.g., America/Toronto, America/Vancouver)</small>
 
-        <h2 style="color: #0E9AA7; border-bottom: 2px solid #0E9AA7; padding-bottom: 5px;">📲 Instant Notifications</h2>
+        <h2 id="instant-notify" style="color: #0E9AA7; border-bottom: 2px solid #0E9AA7; padding-bottom: 5px;">📲 Instant Notifications</h2>
 
         <label for="TELEGRAM_BOT_TOKEN">Telegram Bot Token:</label>
         <input type="password" id="TELEGRAM_BOT_TOKEN" name="TELEGRAM_BOT_TOKEN" value="{{ current.TELEGRAM_BOT_TOKEN }}" placeholder="123456:ABC-DEF1234...">
@@ -215,7 +339,7 @@
         <input type="email" id="SENDGRID_TO_EMAIL" name="SENDGRID_TO_EMAIL" value="{{ current.SENDGRID_TO_EMAIL }}" placeholder="you@example.com">
         <small>Recipient for SendGrid API notifications</small>
 
-        <h2 style="color: #F27D42; border-bottom: 2px solid #F27D42; padding-bottom: 5px;">🎯 Auto-Book Preferences</h2>
+        <h2 id="autobook-pref" style="color: #F27D42; border-bottom: 2px solid #F27D42; padding-bottom: 5px;">🎯 Auto-Book Preferences</h2>
 
         <label for="PREFERRED_TIME">Preferred Appointment Time:</label>
         <select id="PREFERRED_TIME" name="PREFERRED_TIME">
@@ -226,7 +350,7 @@
         </select>
         <small>When auto-booking, pick time slots closest to your preference</small>
 
-        <h2 style="color: #8B4513; border-bottom: 2px solid #8B4513; padding-bottom: 5px;">⚙️ Performance Settings</h2>
+        <h2 id="performance" style="color: #8B4513; border-bottom: 2px solid #8B4513; padding-bottom: 5px;">⚙️ Performance Settings</h2>
 
         <label for="MAX_REQUESTS_PER_HOUR">Max API Requests Per Hour:</label>
         <input type="number" id="MAX_REQUESTS_PER_HOUR" name="MAX_REQUESTS_PER_HOUR" value="{{ current.MAX_REQUESTS_PER_HOUR }}" placeholder="120">
@@ -297,10 +421,13 @@
         <button type="submit" style="font-size: 16px; padding: 12px 24px;">💾 Save Strategic Configuration</button>
     </form>
     <div style="text-align: center; margin-top: 20px; display: flex; justify-content: center; gap: 20px; flex-wrap: wrap;">
+        <a href="/control" style="color: #3498db; text-decoration: none; font-weight: 500;">🎛 Remote Control</a>
         <a href="/analytics" style="color: #3498db; text-decoration: none; font-weight: 500;">📊 Slot Analytics</a>
         <a href="/logs" style="color: #3498db; text-decoration: none; font-weight: 500;">📋 Live Logs</a>
         <a href="/update" style="color: #3498db; text-decoration: none; font-weight: 500;">🔄 Update from GitHub</a>
     </div>
     </div>
+    </div>
+    <a class="floating-control" href="/dashboard">🎛 Control Center</a>
 </body>
 </html>

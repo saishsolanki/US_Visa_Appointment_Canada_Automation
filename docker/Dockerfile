@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     gnupg \
     curl \
+    gosu \
     ca-certificates \
     fonts-liberation \
     libasound2t64 \
@@ -65,16 +66,20 @@ COPY *.py ./
 COPY selectors.yml .
 COPY config.ini.template .
 COPY templates/ templates/
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-# Create directories
-RUN mkdir -p logs artifacts
-
-# Note: We run as root to avoid permission issues with mounted volumes
-# Security is maintained through Docker's resource limits and network isolation
+# Create runtime user and writable app directories
+RUN groupadd -g 1000 visabot \
+    && useradd -m -u 1000 -g 1000 -s /usr/sbin/nologin visabot \
+    && mkdir -p logs artifacts \
+    && chown -R visabot:visabot /app \
+    && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Health check: verify the checker process is still running as PID 1
 HEALTHCHECK --interval=5m --timeout=30s --start-period=60s --retries=3 \
     CMD python3 -c "import pathlib, sys; cmdline = pathlib.Path('/proc/1/cmdline').read_text(errors='ignore'); sys.exit(0 if 'visa_appointment_checker.py' in cmdline else 1)"
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 # Default command - run checker with 5-minute frequency
 CMD ["python3", "visa_appointment_checker.py", "--frequency", "5"]

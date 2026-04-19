@@ -201,11 +201,29 @@ Common issues:
 - SMTP authentication failed
 - Chrome crash (usually fixed by rebuilding)
 
+### Permission denied in logs/artifacts
+
+If you see `PermissionError` for `/app/logs` or `/app/artifacts`:
+
+```bash
+mkdir -p logs artifacts
+chmod -R u+rwX logs artifacts
+docker compose down
+docker compose up -d --build
+```
+
+If your host filesystem blocks ownership changes (some NFS/root-squash setups), force root runtime as a last resort:
+
+```bash
+RUN_AS_ROOT=true docker compose up -d --build
+```
+
 ### SMTP/Email errors
 
 1. Verify your Gmail App Password
 2. Check if port 587 is accessible: `nc -zv smtp.gmail.com 587`
 3. Make sure 2FA is enabled on your Gmail account
+4. Monitoring continues even when SMTP fails (email errors are non-fatal)
 
 ### Out of disk space
 
@@ -230,9 +248,10 @@ docker compose up -d
 ## 🔒 Security Notes
 
 1. **Never commit config.ini** - It contains your credentials
-2. The container runs as non-root user for security
+2. The container defaults to non-root `visabot` after startup permission repair
 3. Config file is mounted read-only
-4. Consider using Docker secrets for production deployments
+4. Use `RUN_AS_ROOT=true` only as a fallback when host storage blocks writes
+5. Consider using Docker secrets for production deployments
 
 ## 📁 File Structure
 

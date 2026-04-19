@@ -50,6 +50,26 @@ def test_config_validation_error_is_clear(tmp_path: Path) -> None:
         CheckerConfig.load(str(config_path))
 
 
+def test_config_blank_optional_ints_use_fallbacks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MAX_API_REQUESTS_PER_HOUR", raising=False)
+    monkeypatch.delenv("MAX_UI_NAVIGATIONS_PER_HOUR", raising=False)
+    monkeypatch.delenv("VPN_MIN_SESSION_MINUTES", raising=False)
+
+    config_path = _write_config(
+        tmp_path / "config.ini",
+        {
+            "MAX_API_REQUESTS_PER_HOUR": "",
+            "MAX_UI_NAVIGATIONS_PER_HOUR": "",
+            "VPN_MIN_SESSION_MINUTES": "",
+        },
+    )
+
+    cfg = CheckerConfig.load(str(config_path))
+    assert cfg.max_api_requests_per_hour == 120
+    assert cfg.max_ui_navigations_per_hour == 60
+    assert cfg.vpn_min_session_minutes == 10
+
+
 def test_login_selector_smoke() -> None:
     assert (By.ID, "user_email") in VisaAppointmentChecker.EMAIL_SELECTORS
     assert (By.ID, "user_password") in VisaAppointmentChecker.PASSWORD_SELECTORS

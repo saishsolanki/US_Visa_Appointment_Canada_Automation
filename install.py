@@ -22,21 +22,16 @@ def run_command(command, description):
         return False
 
 def install_dependencies():
-    """Install Python dependencies"""
-    print("Installing Python dependencies...")
-
-    dependencies = [
-        "selenium",
-        "webdriver-manager",
-        "flask"
-    ]
-
-    success = True
-    for dep in dependencies:
-        if not run_command(f"pip install {dep}", dep):
-            success = False
-
-    return success
+    """Create a fresh virtualenv and install dependencies reproducibly."""
+    print("Bootstrapping virtual environment...")
+    cmd = [sys.executable, "bootstrap_env.py", "--venv-dir", "venv", "--fresh"]
+    try:
+        subprocess.run(cmd, check=True)
+        print("✓ Virtual environment bootstrapped successfully")
+        return True
+    except subprocess.CalledProcessError as exc:
+        print(f"✗ Failed to bootstrap virtual environment: {exc}")
+        return False
 
 def create_default_config():
     """Create default configuration file"""
@@ -98,9 +93,9 @@ def main():
     print("1. Edit config.ini with your actual credentials and settings")
     print("2. For Gmail SMTP, create an app password at:")
     print("   https://myaccount.google.com/apppasswords")
-    print("3. Run the web UI: python web_ui.py")
+    print("3. Run the web UI: venv\\Scripts\\python.exe web_ui.py")
     print("4. Configure settings at http://127.0.0.1:5000")
-    print("5. Run the checker: python visa_appointment_checker.py")
+    print("5. Run the checker: venv\\Scripts\\python.exe visa_appointment_checker.py")
     print("\\nNote: Gmail SMTP is used as the default (free service)")
     print("You can change to another email provider if preferred.")
 
